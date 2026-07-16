@@ -9,8 +9,10 @@ from pathlib import Path
 from src.LULCCSimulator import LULCCSimulator
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT_DIR / "In_ncfile"
-OUT_DIR = ROOT_DIR / "Out_ncfile"
+PROJECT_DIR = ROOT_DIR.parent
+
+DATA_DIR = PROJECT_DIR / "In_ncfile"
+OUT_DIR = PROJECT_DIR / "Out_ncfile"
 CONFIG_DIR = ROOT_DIR / "config"
 EXPERIMENT_DIR = CONFIG_DIR / "experiments"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
