@@ -27,7 +27,7 @@ echo "Array job: ${SLURM_ARRAY_JOB_ID:-none} Task: ${SLURM_ARRAY_TASK_ID:-0}"
 # ----------------------------------------------------------------------
 # Runtime selection
 #
-# RESOLUTION=025deg -> server.main, default BAND_SIZE=3, 120 bands
+# RESOLUTION=025deg -> server.main_025deg, default BAND_SIZE=3, 120 bands
 # RESOLUTION=1deg   -> server.main_1deg, default BAND_SIZE=10, 36 bands
 # ----------------------------------------------------------------------
 RESOLUTION="${RESOLUTION:-025deg}"
