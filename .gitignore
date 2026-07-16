@@ -1,23 +1,105 @@
-# Python缓存
+# ----------------------------------------------------------------------
+# Python bytecode and caches
+# ----------------------------------------------------------------------
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 
-# 编辑器文件
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.coverage
+.coverage.*
+htmlcov/
+
+# ----------------------------------------------------------------------
+# Virtual environments and package/build outputs
+# ----------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# ----------------------------------------------------------------------
+# Editors and IDEs
+# ----------------------------------------------------------------------
 .vscode/
 .idea/
+*.code-workspace
 
-# 本地输入输出
-in_file/
-out_file/
-output/
-outputs/
-results/
-logs/
+# ----------------------------------------------------------------------
+# Jupyter
+# ----------------------------------------------------------------------
+.ipynb_checkpoints/
 
-# 临时文件
+# ----------------------------------------------------------------------
+# Operating-system files
+# ----------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ----------------------------------------------------------------------
+# Model input and output directories
+# These names match src/main.py
+# ----------------------------------------------------------------------
+/In_ncfile/
+/Out_ncfile/
+
+# Legacy or alternative local input/output directory names
+/in_file/
+/out_file/
+/input/
+/inputs/
+/output/
+/outputs/
+/results/
+
+# ----------------------------------------------------------------------
+# Runtime logs, temporary files, and scheduler outputs
+# ----------------------------------------------------------------------
+/logs/
 *.log
 *.tmp
+*.temp
 *.bak
-Thumbs.db
+*.swp
+*.swo
+*~
+
+slurm-*.out
+slurm-*.err
+*.out
+*.err
+
+# ----------------------------------------------------------------------
+# Local test/run products
+# ----------------------------------------------------------------------
+summary*.nc
+summary*.csv
+diagnostic*.csv
+closure*.csv
+
+# ----------------------------------------------------------------------
+# Local configuration overrides and secrets
+# Keep shared files under config/ tracked.
+# ----------------------------------------------------------------------
+.env
+.env.*
+config/local.yml
+config/local.yaml
+config/*_local.yml
+config/*_local.yaml
+
+# ----------------------------------------------------------------------
+# Microsoft Office temporary files
+# ----------------------------------------------------------------------
 ~$*

@@ -1,9 +1,6 @@
 # Python >=3.8 recommended
-# Core numerical array operations
 numpy>=1.20,<2.0
-
-# Read/write NetCDF files; pulls cftime as a dependency
 netCDF4>=1.6,<2.0
-
-# Read config.yml
 PyYAML>=6.0,<7.0
+pandas>=1.5,<3.0
+pyarrow>=10,<21

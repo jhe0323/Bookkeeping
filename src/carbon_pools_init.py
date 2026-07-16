@@ -1,5 +1,5 @@
 from typing import Dict, Optional
-from parameter_loader import ParameterLoader
+from src.parameter_loader import ParameterLoader
 import numpy as np
 
 # pool types (i): vegetation biomass (B), 

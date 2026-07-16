@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Dict, Any
 
-from carbon_pools_init import history_index, pool_index_Delta
+from src.carbon_pools_init import history_index, pool_index_Delta
 
 
 _EFOLD = 0.534  # keep consistent with transition.response_func / excess_remaining

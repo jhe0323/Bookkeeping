@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Optional, Union
 import numpy as np
-from carbon_pools_init import pool_index_Cbar, pool_index_Delta
+from src.carbon_pools_init import pool_index_Cbar, pool_index_Delta
 
 # summarize results. biomass and soil for all LULC, products, atmosphere
 def summarize_year(
