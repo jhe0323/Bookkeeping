@@ -656,13 +656,3 @@ CHANGELOG.md
 > We used an event-based land-use and land-cover change carbon bookkeeping model driven by annual LUH2 land-cover states, transition matrices, and wood-harvest forcing. The model tracks biomass, slow- and rapid-soil carbon, wood-product pools, and atmospheric carbon for each grid cell while retaining legacy effects from historical clearing, abandonment, harvest, and agricultural land conversion. Carbon transfers were calculated using PFT-dependent carbon densities and event-specific allocation and response parameters. Annual gridded outputs were summarized as gross sources, gross sinks, net LULCC emissions, process-level fluxes, and LUCE-style transition categories.
 
 ---
-
-## 19. Repository maintenance note
-
-After merging this content into `README.md`, the separate file:
-
-```text
-README_area_driven_harvest.md
-```
-
-is no longer required and should be removed from the repository. Its content is incorporated into Sections 1.1 and 13 of this README.

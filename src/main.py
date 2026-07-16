@@ -6,11 +6,10 @@ import os
 from pathlib import Path
 from LULCCSimulator import LULCCSimulator
 
-BASE_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = BASE_DIR.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent
 
-DATA_DIR = PROJECT_DIR / "In_ncfile"
-OUT_DIR = PROJECT_DIR / "Out_ncfile"
+DATA_DIR = ROOT_DIR / "In_ncfile"
+OUT_DIR = ROOT_DIR / "Out_ncfile"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # path for input files
@@ -23,7 +22,9 @@ TRANS_PATH = DATA_DIR / "transitions_1deg.nc"
 PFT_PATH = DATA_DIR / "PFTmap_orchidee_1deg.nc"
 # PFT_PATH = DATA_DIR / "synthetic_pft.nc"
 
-CONFIG_PATH = BASE_DIR / "config.yml"
+CONFIG_PATH = ROOT_DIR / "config" / "config.yml"
+
+DENSITY_PATH = ROOT_DIR / "config" / "dynamic_carbon_density.parquet"
 
 # Local output file
 OUT_NC = OUT_DIR / "summary_global_win_serial.nc"
