@@ -1,18 +1,25 @@
 2026.7.16
 将所有代码上传github仓库，使用git对代码进行管理。
-Bookkeeping
+Bookkeeping/
 │
-├── main branch
-│   ├── 完整模型
-│   ├── tools
-│   ├── 数据预处理
-│   └── 稳定版本 main: pure area-driven harvest
+├── README.md
+├── requirements.txt
+├── .gitignore
 │
-├── harvest-area-forced branch
-│   └── harvest方案A
+├── src/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── LULCCSimulator.py
+│   ├── events.py
+│   ├── transition.py
+│   ├── file_loader.py
+│   ├── parameter_loader.py
+│   ├── carbon_pools_init.py
+│   └── summary_yearly.py
 │
-└── harvest-bio-forced branch
-    └── harvest方案B
+└── config/
+    ├── config.yml
+    └── dynamic_carbon_density.parquet
 
 2026.7.7
 1. 增加v2.1版本，仅对harvest过程进行了改动，harvest仅读取LUH2中harvest面积，不读取*_bio部分，即harvest过程仅由数据数据提供的面积控制，不做面积和生物量需求检查。

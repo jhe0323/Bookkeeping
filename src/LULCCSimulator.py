@@ -8,20 +8,20 @@ from typing import Dict, Optional, Tuple
 import netCDF4 as nc
 import numpy as np
 
-from parameter_loader import ParameterLoader
-from carbon_pools_init import (
+from src.parameter_loader import ParameterLoader
+from src.carbon_pools_init import (
     initialize_Cbar,
     initialize_Delta,
     initialize_frac_area,
     refresh_Cbar_from_frac_area,
 )
-from transition import (
+from src.transition import (
     # relax_one_year_blue,
     relax_one_year_blue_with_diag
 )
-from summary_yearly import summarize_year
-from file_loader import FileLoader
-from events import (
+from src.summary_yearly import summarize_year
+from src.file_loader import FileLoader
+from src.events import (
     apply_clearing,
     apply_abandonment,
     apply_harvest_luh2,

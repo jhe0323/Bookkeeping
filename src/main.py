@@ -4,7 +4,7 @@
 from __future__ import annotations
 import os
 from pathlib import Path
-from LULCCSimulator import LULCCSimulator
+from src.LULCCSimulator import LULCCSimulator
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
