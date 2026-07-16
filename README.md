@@ -360,7 +360,7 @@ A minimal Python example is:
 
 ```python
 from pathlib import Path
-from LULCCSimulator import LULCCSimulator
+from src.LULCCSimulator import LULCCSimulator
 
 base_dir = Path(__file__).resolve().parent
 project_dir = base_dir.parent
