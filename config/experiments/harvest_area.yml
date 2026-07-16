@@ -1,0 +1,11 @@
+experiment:
+  name: harvest_area_driven
+
+harvest:
+  mode: area
+  demand_source:
+    use_bioh: false
+  area_constraint:
+    use_luh2_harvest_area: true
+  allow_expansion:
+    enabled: false

@@ -1,0 +1,11 @@
+experiment:
+  name: harvest_bio_forced
+
+harvest:
+  mode: biomass_demand
+  demand_source:
+    use_bioh: true
+  area_constraint:
+    use_luh2_harvest_area: true
+  allow_expansion:
+    enabled: true

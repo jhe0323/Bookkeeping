@@ -24,9 +24,9 @@ from src.file_loader import FileLoader
 from src.events import (
     apply_clearing,
     apply_abandonment,
-    apply_harvest_luh2,
     apply_others,
 )
+from src.harvest import apply_harvest_luh2
 
 FORMAL_FLUX_KEYS = [
     "Gross_Sources", "Gross_Sinks", "Net_Emissions", "Closure_Error",
@@ -37,12 +37,12 @@ FORMAL_FLUX_KEYS = [
 ]
 
 HARVEST_DIAG_KEYS = [
-    # Harvest biomass diagnostics in pure area-driven mode
-    "harvest_requested_biomass",      # Model-implied biomass on LUH2 *_harv area; *_bioh is not used
-    "harvest_met_biomass",            # Same as biomass removed in area-driven mode
-    "harvest_unmet_biomass",          # Always zero in area-driven mode
-    "harvest_unmet_raw_biomass",      # Always zero in area-driven mode
-    "harvest_forced_biomass",         # Always zero; no harvest outside LUH2 footprint
+    # Harvest biomass diagnostics
+    "harvest_requested_biomass",      # Area-implied removal or LUH2 *_bioh demand, depending on mode
+    "harvest_met_biomass",            # Demand met within the LUH2 harvest footprint
+    "harvest_unmet_biomass",          # Demand not satisfied after the selected harvest strategy
+    "harvest_unmet_raw_biomass",      # Demand not satisfied after the selected harvest strategy
+    "harvest_forced_biomass",         # Removal outside the LUH2 footprint in expansion mode
 
     # Harvest area diagnostics
     "harvest_luh2_area_frac",         # LUH2 *_harv fraction of whole grid cell
@@ -87,6 +87,7 @@ class LULCCSimulator:
         LULC_path: str = "states.nc",
         trans_path: str = "transitions.nc",
         *,
+        experiment_path: Optional[str] = None,
         lat_slice: slice = None,
         lon_slice: slice = None,
         area_unit: str = "ha", # using ha for Qing et al. (2024) data. BECAREFUL CHANGING TO OTHER UNITS
@@ -102,10 +103,15 @@ class LULCCSimulator:
             LUH2 transitions file (e.g., transitions.nc).
         pft_path : str
             PFT map file (required).
+        experiment_path : str or None
+            Optional experiment YAML overlaid on the base config.
         area_unit : str
             "m2" (default), "ha", or "km2".
         """
-        self.params = ParameterLoader(config_path)
+        self.params = ParameterLoader(
+            config_path,
+            experiment_path=experiment_path,
+        )
         # --- Load LUH2 + PFT through a dedicated loader (I/O + format normalization) ---
         # Server version: only the requested lat/lon slice is loaded into memory.
         self.loader = FileLoader()
@@ -432,58 +438,65 @@ class LULCCSimulator:
                     transitions[lulc_key] = transitions.get(lulc_key, 0.0) + frac_val
         return transitions
 
-    def _parse_wood_harvest(self, year_idx: int, lat_idx: int, lon_idx: int) -> Dict[str, Dict[str, float]]:
-        """
-        Parse LUH2 wood-harvest area channels from transitions.nc.
-
-        Pure area-driven harvest uses only *_harv variables. LUH2 *_bioh is
-        intentionally ignored and is not read here.
-
-        Returns
-        -------
-        Dict[harvest_type, dict]
-            {
-                "primf": {"area_frac": <float>},
-                "primn": {"area_frac": <float>},
-                "secmf": {"area_frac": <float>},
-                "secyf": {"area_frac": <float>},
-                "secnf": {"area_frac": <float>},
-            }
-
-        Notes
-        -----
-        - *_harv : fraction of whole grid cell per year
-        - Missing channels are treated as 0
-        - Negative / NaN values are clipped to 0
-        """
+    def _parse_wood_harvest(
+        self,
+        year_idx: int,
+        lat_idx: int,
+        lon_idx: int,
+    ) -> Dict[str, Dict[str, float]]:
+        """Parse the LUH2 harvest channels required by the active experiment."""
         i, j = self._normalize_ij(lat_idx, lon_idx)
         ii = self._ds_lat_idx(i, "trans")
         jj = self._ds_lon_idx(j, "trans")
 
         families = ["primf", "primn", "secmf", "secyf", "secnf"]
+        use_bioh = self.params.harvest_use_bioh
         out: Dict[str, Dict[str, float]] = {}
 
-        for fam in families:
-            v_harv = self.trans_data.variables.get(f"{fam}_harv")
-            if v_harv is None:
-                continue
+        for family in families:
+            area_var = self.trans_data.variables.get(f"{family}_harv")
+            biomass_var = (
+                self.trans_data.variables.get(f"{family}_bioh")
+                if use_bioh
+                else None
+            )
 
-            try:
-                vv = v_harv[year_idx, ii, jj]
-                vv = vv.filled(np.nan) if hasattr(vv, "filled") else vv
-                area_frac = float(vv)
-            except Exception:
-                area_frac = np.nan
+            area_frac = 0.0
+            if area_var is not None:
+                try:
+                    value = area_var[year_idx, ii, jj]
+                    value = value.filled(np.nan) if hasattr(value, "filled") else value
+                    area_frac = float(value)
+                except Exception:
+                    area_frac = np.nan
 
             if not np.isfinite(area_frac) or area_frac < 0.0:
                 area_frac = 0.0
             elif area_frac > 1.0:
                 area_frac = 1.0
 
-            if area_frac <= 0.0:
-                continue
+            biomass_kgC = 0.0
+            if biomass_var is not None:
+                try:
+                    value = biomass_var[year_idx, ii, jj]
+                    value = value.filled(np.nan) if hasattr(value, "filled") else value
+                    biomass_kgC = float(value)
+                except Exception:
+                    biomass_kgC = np.nan
 
-            out[fam] = {"area_frac": float(area_frac)}
+            if not np.isfinite(biomass_kgC) or biomass_kgC < 0.0:
+                biomass_kgC = 0.0
+
+            if self.params.harvest_mode == "area":
+                active = area_frac > 0.0
+            else:
+                active = area_frac > 0.0 or biomass_kgC > 0.0
+
+            if active:
+                out[family] = {
+                    "area_frac": float(area_frac),
+                    "biomass_kgC": float(biomass_kgC),
+                }
 
         return out
 
@@ -528,6 +541,13 @@ class LULCCSimulator:
     
         ds = nc.Dataset(out_nc, "w")
         try:
+            ds.experiment_name = self.params.experiment_name
+            ds.harvest_mode = self.params.harvest_mode
+            ds.harvest_use_bioh = int(self.params.harvest_use_bioh)
+            ds.harvest_allow_expansion = int(
+                self.params.harvest_allow_expansion
+            )
+
             ds.createDimension("time", T)
             ds.createDimension("lat",  Ni)
             ds.createDimension("lon",  Nj)
@@ -745,33 +765,38 @@ class LULCCSimulator:
                 else:
                     continue
                 
-            # Additional LUH2 wood-harvest routine.
-            # Pure area-driven mode uses only *_harv area; *_bioh is ignored.
-            wood_harv = self._parse_wood_harvest(year + start_year_idx, lat_idx, lon_idx)
+            # LUH2 wood harvest is handled separately from state transitions.
+            wood_harv = self._parse_wood_harvest(
+                year + start_year_idx,
+                lat_idx,
+                lon_idx,
+            )
 
-            if wood_harv:
-                for harvest_type, hw in wood_harv.items():
-                    area_frac = float(hw.get("area_frac", 0.0))
+            for harvest_type, harvest_input in wood_harv.items():
+                area_frac = float(harvest_input.get("area_frac", 0.0))
+                biomass_kgC = float(harvest_input.get("biomass_kgC", 0.0))
 
-                    if area_frac < 1e-9:
-                        continue
+                apply_harvest_luh2(
+                    mode=self.params.harvest_mode,
+                    allow_expansion=self.params.harvest_allow_expansion,
+                    harvest_type=harvest_type,
+                    area_frac=area_frac,
+                    biomass_harv_kgC=(
+                        biomass_kgC
+                        if self.params.harvest_use_bioh and biomass_kgC > 0.0
+                        else None
+                    ),
+                    cell_area=cell_area,
+                    pft_grid=pft_grid,
+                    params=self.params,
+                    C_bar=C_bar,
+                    Delta=Delta,
+                    LULC_frac=LULC_frac,
+                    frac_area=frac_area,
+                    t_idx=t_next,
+                    diag=diag,
+                )
 
-                    apply_harvest_luh2(
-                        harvest_type=harvest_type,
-                        area_frac=area_frac,
-                        biomass_harv_kgC=None,  # ignored by area-driven harvest
-                        cell_area=cell_area,
-                        pft_grid=pft_grid,
-                        params=self.params,
-                        C_bar=C_bar,
-                        Delta=Delta,
-                        LULC_frac=LULC_frac,
-                        frac_area=frac_area,
-                        t_idx=t_next,
-                        diag=diag,
-                    )
-
-                   
             # End-of-time-step decay / relaxation
             Atmos[t_next], diag_relax = relax_one_year_blue_with_diag(
                 Delta=Delta,

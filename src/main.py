@@ -1,46 +1,68 @@
-# main.py
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
+
 from __future__ import annotations
-import os
+
+import argparse
 from pathlib import Path
+
 from src.LULCCSimulator import LULCCSimulator
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-
 DATA_DIR = ROOT_DIR / "In_ncfile"
 OUT_DIR = ROOT_DIR / "Out_ncfile"
+CONFIG_DIR = ROOT_DIR / "config"
+EXPERIMENT_DIR = CONFIG_DIR / "experiments"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# path for input files
 STATE_PATH = DATA_DIR / "states_1deg.nc"
-# STATE_PATH = DATA_DIR / "synthetic_states.nc"
-
 TRANS_PATH = DATA_DIR / "transitions_1deg.nc"
-# TRANS_PATH = DATA_DIR / "synthetic_transitions.nc"
-
 PFT_PATH = DATA_DIR / "PFTmap_orchidee_1deg.nc"
-# PFT_PATH = DATA_DIR / "synthetic_pft.nc"
+CONFIG_PATH = CONFIG_DIR / "config.yml"
 
-CONFIG_PATH = ROOT_DIR / "config" / "config.yml"
+EXPERIMENT_ALIASES = {
+    "area": EXPERIMENT_DIR / "harvest_area.yml",
+    "bio-strict": EXPERIMENT_DIR / "harvest_bio_strict.yml",
+    "bio-forced": EXPERIMENT_DIR / "harvest_bio_forced.yml",
+}
 
-DENSITY_PATH = ROOT_DIR / "config" / "dynamic_carbon_density.parquet"
 
-# Local output file
-OUT_NC = OUT_DIR / "summary_global_win_serial.nc"
+def _resolve_experiment(value: str) -> Path:
+    alias_path = EXPERIMENT_ALIASES.get(value)
+    path = alias_path if alias_path is not None else Path(value)
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    path = path.resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Experiment configuration not found: {path}")
+    return path
 
 
-if __name__ == "__main__":
-    # Local test mode:
-    # - Keep lat_slice/lon_slice as None to load and run the full local grid.
-    # - For quick tests, set small slices below, for example:
-    #     lat_slice = slice(80, 100)
-    #     lon_slice = slice(120, 140)
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run one Bookkeeping harvest experiment.",
+    )
+    parser.add_argument(
+        "--experiment",
+        default="area",
+        help=(
+            "Experiment alias (area, bio-strict, bio-forced) or a YAML path. "
+            "Default: area"
+        ),
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    experiment_path = _resolve_experiment(args.experiment)
+
     lat_slice = None
     lon_slice = None
 
-    sim = LULCCSimulator(
+    simulator = LULCCSimulator(
         config_path=str(CONFIG_PATH),
+        experiment_path=str(experiment_path),
         LULC_path=str(STATE_PATH),
         trans_path=str(TRANS_PATH),
         pft_path=str(PFT_PATH),
@@ -49,55 +71,26 @@ if __name__ == "__main__":
         area_unit="ha",
     )
 
-    # If lat_slice/lon_slice were already passed to LULCCSimulator, the loaded
-    # dataset is local to that slice. Therefore run_simulation_grid usually
-    # receives lat_slice=None and lon_slice=None here.
-    
-    # lat_slice, lon_slice = sim.indices_for_bbox(
-    #     lat_min=3.0, 
-    #     lat_max=54.0, 
-    #     lon_min=73.0, 
-    #     lon_max=136.0
-    # )
-    
-    sim.run_simulation_grid(
+    output_path = OUT_DIR / (
+        f"summary_global_{simulator.params.experiment_name}.nc"
+    )
+    print(
+        "[experiment] "
+        f"name={simulator.params.experiment_name}, "
+        f"mode={simulator.params.harvest_mode}, "
+        f"use_bioh={simulator.params.harvest_use_bioh}, "
+        f"allow_expansion={simulator.params.harvest_allow_expansion}"
+    )
+
+    simulator.run_simulation_grid(
         years=1173,
-        out_nc=str(OUT_NC),
+        out_nc=str(output_path),
         lat_slice=None,
         lon_slice=None,
         start_year_idx=0,
         sync_every=200,
     )
-    
-    # sim.run_diagnostic_scan(lat_slice, lon_slice)
-    
-    # n_bands = 12
-    # nlon = 360  # 1度数据通常是360；0.25度则是1440
 
-    # for band in range(n_bands):
-        # j0 = band * nlon // n_bands
-        # j1 = (band + 1) * nlon // n_bands
 
-        # lat_slice = None
-        # lon_slice = slice(j0, j1)
-
-        # sim = LULCCSimulator(
-            # config_path=str(CONFIG_PATH),
-            # LULC_path=str(STATE_PATH),
-            # trans_path=str(TRANS_PATH),
-            # pft_path=str(PFT_PATH),
-            # lat_slice=lat_slice,
-            # lon_slice=lon_slice,
-            # area_unit="ha",
-        # )
-
-        # out_nc = OUT_DIR / f"summary_global_win_band_{band:02d}.nc"
-
-        # sim.run_simulation_grid(
-            # years=173,
-            # out_nc=str(out_nc),
-            # lat_slice=None,
-            # lon_slice=None,
-            # start_year_idx=1000,
-            # sync_every=200,
-        # )
+if __name__ == "__main__":
+    main()
