@@ -36,7 +36,7 @@ STAGGER_MAX="${STAGGER_MAX:-600}"
 
 case "${RESOLUTION}" in
     025deg)
-        RUNNER="server.main"
+        RUNNER="server.main_025deg"
         BAND_SIZE="${BAND_SIZE:-3}"
         ;;
     1deg)
