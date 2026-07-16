@@ -271,19 +271,19 @@ A common local layout is:
 ├── Out_ncfile/
 │
 └── Bookkeeping/
-    ├── main.py
-    ├── LULCCSimulator.py
-    ├── events.py
-    ├── transition.py
-    ├── file_loader.py
-    ├── parameter_loader.py
-    ├── carbon_pools_init.py
-    ├── summary_yearly.py
-    ├── config.yml
-    ├── dynamic_carbon_density.parquet
-    ├── requirements.txt
-    ├── README.md
-    └── tools/                       # retained only on main
+	│
+	├── README.md
+	├── requirements.txt
+	│
+	├── src/
+	│	├── __init__.py
+	│   ├── main.py
+	│   ├── LULCCSimulator.py
+	│   └── ...
+	│
+	└── config/
+		├── config.yml
+		└── dynamic_carbon_density.parquet
 ```
 
 The `tools/` directory contains preprocessing, checking, merging, plotting, or diagnostic utilities. It is retained only on `main`; the two harvest experiment branches contain only the model files required for their respective simulations.
@@ -308,14 +308,20 @@ The `tools/` directory contains preprocessing, checking, merging, plotting, or d
 The main call sequence is:
 
 ```text
-main.py
-└── LULCCSimulator
-    ├── ParameterLoader
-    ├── FileLoader
-    ├── carbon_pools_init
-    ├── events
-    ├── transition
-    └── summary_yearly
+Bookkeeping/
+│
+├── README.md
+├── requirements.txt
+│
+├── src/
+│	├── __init__.py
+│   ├── main.py
+│   ├── LULCCSimulator.py
+│   └── ...
+│
+└── config/
+    ├── config.yml
+    └── dynamic_carbon_density.parquet
 ```
 
 ---
@@ -347,7 +353,7 @@ pyarrow
 The recommended entry point is:
 
 ```bash
-python main.py
+python src/main.py
 ```
 
 A minimal Python example is:
