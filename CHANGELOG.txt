@@ -1,0 +1,232 @@
+2026.7.7
+1. 增加v2.1版本，仅对harvest过程进行了改动，harvest仅读取LUH2中harvest面积，不读取*_bio部分，即harvest过程仅由数据数据提供的面积控制，不做面积和生物量需求检查。
+2. 采用HLUH-5km数据，生成对应states和transition的nc文件，当前分辨率1°，做测试。transition的逻辑：以相隔两年静态土地利用数据为基础，计算每种土地利用类型的变化大小，再将减少量按比例分配至增加量中，获得数据为相邻两年的净变化。
+
+下一步：
+1. 修改LUH2数据以适配HLUH数据，在1900年需要做衔接。1900年前采用LUH2数据，1900年之后用HLUH数据。
+2. 开发模型适配HLUH数据。
+2. 测试数据
+
+2026.6.4
+增加动态carbon density计算逻辑（DLC升级）
+在 config.yml 中新增 dynamic_carbon_density 配置字段，用于控制是否启用动态 carbon density 参数。默认情况下可保持 enabled: false，模型继续沿用原有 yml 中的静态 carbon_density 运行逻辑；当设置为 enabled: true 时，模型自动读取 dynamic_carbon_density.parquet，按照模拟年份动态调用不同年份、不同 PFT、不同土地利用类型的 biomass 和 soil carbon density。
+更新 ParameterLoader、carbon_pools_init.py、LULCCSimulator.py以适配升级
+
+2026.5.16
+目前harvest是根据biomass找area，根据area确定目前有多少biomass可供harvest，如果全用完，就到unmet，unmet 不从 biomass/soil source pool 中扣除，也不改变 C_bar 和 land area，但会作为额外的 harvest-history SR 和 product-pool input 写入 Delta。unmet项依旧报告到输出文件。
+所以仅凭输出文件现在还看不到demand是否都被harvest
+
+下一步：
+1. harvest目前不完全符合BLUE逻辑，biomass和soc依然存在src被切走的的情况。
+2. 加入temperal accounting.
+
+
+2026.5.15
+和朱娅坤讨论LUH2数据问题
+
+1. LUCE中primary land的 biomass density是如何获得的？是来自LUH2中额外的 vegetation carbon content/potential biomass数据，还是由其他方式计算？这个 primary biomass density在每个网格上是固定值，还是会随时间变化？ 
+	LUH2有附MIAMI模型的density输出文件，在附件中，下载可以使用
+
+2. LUCE中secondary land的biomass density是如何使用LUH2的mean age和mean biomass density的？是先在逐网格上拟合age–biomass density曲线，然后每年根据 secondary age查表/计算biomass density，还是直接使用 LUH2 每年给出的 secondary mean biomass density？
+	密度用LUH2数据的biomass density，根据林龄计算biomass density。例如，50年森林砍伐就查找相应density，重新生长就按照生长曲线
+3. LUH2给出的secondary mean age和mean biomass density是forest和non-forest 的平均值。如果直接用这个均值计算secondary land的碳密度，是否会导致forest相关转换的碳效应偏低，而non-forest相关转换的碳效应偏高？
+	LUCE用固定PFT，单网格单PFT，因为LUH2给的信息是当前网格是森林就是森林（存疑？）。若当前网格是森林，但PFT不是森林，强行手动调到森林，反之亦然。
+
+4. LUH2的wood harvest和 clearing之间存在时间变化的处理。在1850 年以前clearing 产生的wood被认为全部计入wood harvest demand，1850–1920年按线性下降，并分配给harvest过程，1920 年以后clearing wood不再计入wood harvest demand，这部分全归到harvest过程。因此，如果在1920年以前同时计算clearing biomass removal 和LUH2 harvested biomass，可能会造成double counting。LUCE 中是否对这一部分做了扣除或特殊处理？
+	LUCE没做区分
+
+5. 我目前在模型中计算harvest时，是先比较LUH2给出的harvested biomass demand和当前网格可供harvest的biomass，可满足的部分进入harvest，不满足的部分暂不计入。但发现unharvested biomass的量级比较大，达到10^8，只比ELUC小一个量级。也就是说，LUH2 给出的harvested biomass在一些情况下会大于当前模型中可供 harvest的biomass。LUCE中是否遇到过类似问题？
+	LUCE不使用harvested biomass数据，仅用harvested area，用以构建曲线。unharvested部分未做分析和考虑
+
+2026.5.4
+1. 增加了网格尺度排放向面积通量转换的功能，将总碳通量转换为 g C m⁻² yr⁻¹。
+2. 补充了网格面积计算过程，使 0.25° 和 1° 输出都可以进行 per-area 通量分析。
+3. ！！！0.25°结果和GCB2025及Qin 2024结果高度一致！！！
+
+2026.4.30
+1. 开始将模型从 1° 输入适配到 0.25° LUH2 输入数据。
+2. 更新了文件读取和网格元数据结构，增加对 0.25° lat/lon、area 和 block 输出的支持。
+3. 修改了 PFT map 适配流程，将 0.5° IBIS dominant PFT 数据转换为 0.25° 模型可用格式。
+4. 更新了 0.25° 分块运行输出逻辑，使每个 rank 输出独立的 summary_025deg.rankXXX.nc 文件。
+
+2026.4.28
+1. 重构了模型输出指标体系，从过程诊断变量逐步转向 GCB 和 LUCE 对齐的高层级指标。
+2. 增加了宏观收支输出，包括 Gross_Sources、Gross_Sinks 和 Net_Emissions。
+3. 增加了 LUCE 六大类通量输出框架，包括 Flux_FD、Flux_NFC、Flux_FR、Flux_NFR、Flux_CAL 和 Flux_WHp。
+4. 增加了 BLUE 事件分类输出框架，包括 clearing、abandonment、harvest、other 及产品库相关通量。
+5. 更新了 NetCDF 输出结构，使其不再只保存累计碳库，也能直接保存年均通量或指定阶段平均结果。
+
+2026.4.23
+1. 更新了 yml 文件中的 biomass carbon density 参数，使 LUCE 类别的 biomass density 更接近 BLUE 参数结构。
+2. 调整了 LUCE PFT 类型与 BLUE carbon density 分类之间的映射关系。
+3. 修改了 clearing、harvest 中 biomass 到 product 和 soil/slash 的分配参数，使其与当前 land-cover/PFT 分类保持一致。
+4. 补充了更完整的模型诊断输出变量，包括 clearing、abandonment、harvest、products、deforestation 等过程通量。
+5. 增加了 emit_products_clearing 和 emit_products_harvest，将 clearing 和 harvest 进入产品库后的延迟排放分开记录。
+6. 增加了 deforestation 相关输出，包括 area_deforestation、deforestation_to_A、deforestation_to_products 和 deforestation_to_soil。
+7. 更新了 abandonment 过程输出，增加了 emit_abandonment_biomass 和 emit_abandonment_soil，用于区分生物量恢复和土壤碳变化贡献。
+
+2026.4.20
+1. 调整了 clearing 过程中的直接排放、进入 product pool 和进入 soil/slash pool 的通量拆分。
+2. 增加了 clearing 相关的 per-area 诊断输出，用于区分面积变化驱动和单位面积排放强度驱动的变化。
+3. 更新了 clearing 产品库排放的记录方式，将 emit_products_clearing 从总产品库排放中单独拆分出来。
+
+2026.4.14
+1. 重构了 harvest 中部分采伐的处理方式，将实际满足的 harvest 和未满足的 harvest 分开处理。
+2. 增加了 harvest_requested_biomass、harvest_met_biomass 和 harvest_unmet_biomass 等诊断输出变量。
+3. 更新了 unmet harvest 的分配逻辑，将无法从现有 biomass 中满足的部分转入 product 和 soil/slash 相关通量。
+
+2026.4.13
+1. 修改了 harvest 过程中的 biomass removal 逻辑，加入对当前可用 biomass 的限制，避免采伐量超过现有生物量。
+2. 更新了 harvest 后 biomass delta 的处理方法，使采伐后的碳库变化直接由移除 biomass 和目标碳密度决定。
+
+2026.2.7
+2月5日开会后，达成以下共识：
+1. 不管转换面积变化，只做转换，不管面积，算成gross sink 和 emission。碳密度直接从表格中提取，不管当前有多少碳。简单粗暴
+2. LUH2中相同类型转换不计算，如c3-c4变化，pasture-crop
+3. rapid 和slow soil同时发生，但是分开算，rapid到min soil, slow从min soil开始
+4. Pr harvest之后应该是S，需要再检查数据
+5. 农田草地当年恢复，biomass直接增加，atmo直接减少，但是soil单独算
+基于以上，更新v3版本。结果趋势符合，量级不符
+仍存在问题，增加曲线叠加会导致数值增长不受控，下降曲线叠加会存在Ce一直在系统内叠加问题。必须设置截断点处理叠加问题
+叠加问题可以等效为Δ变化问题，这样就等效到BLUE框架。
+因此，需维护v2版本，v1，v3版本暂时搁置。
+
+2026.1.27
+转换过程及decay过程代码已参照BLUE框架完成。v2版本
+问题：模型参数yml文件中参数需要对照BLUE和LUCE进行更新，pft目前不对
+soil decay过程rapid做线性变化，使得在tau时间到达min，之后用指数做relaxation
+
+2026.1.26
+重构模型核心decay代码，参照BLUE框架。event之后记录各pool要达到稳定状态的equilibrium stock，得到当前stock要达到equilibrium的Δ，excess stock
+cohort记录excess stock（Δ）部分，只对这部分进行decay/regrowth。之后每年结束将excess stock加回总pool，将excess stock的变化量加到atmosphere
+
+2026.1.15
+存在问题：
+1. transition中存在primf_har, primf_bio, secndf_har, secndf_bio变量，目前代码中没有考虑，需要更新LULCC检测过程，并在events中加入这两个过程，并根据提供的bio数据更新库
+2. 需检查，primf_to_secnd是否有数值（简单看来没有）。因为primf_har之后应变成secnd或其他，需要检查内部假设
+
+完成以下更新
+LULCCSimulator.py
+1. events中重构clearing, harvest, abadonment, others过程
+2. SOC在events之后src和dst均更新，将src部分碳转移至dst，再在dst中的cohort中做衰减
+	if LULC_areas[src] > 0: #safety check
+		frac_src = max(0.0, min(1.0, area / LULC_areas[src]))
+	else:
+		frac_src = 0.0
+	soil_inherit = carbon_pools_t1[src]["soil"] * frac_src
+	carbon_pools_t1[src]["soil"] -= soil_inherit
+	carbon_pools_t1[dst]["soil"] += soil_inherit
+3. clear和harvest过程中清除的biomass在当时立即从carbon_pools_t1中减去
+4. events之后重构cohorts更新逻辑，trans_pool逻辑
+	trans_pool只做每年flux追踪，再更新至carbon_pools_t1
+	cohort追踪SOC和Biomass的动力学过程，并返回每年的Δ，再在carbon_pools_t1中±Δ
+5. 每个event及后续cohorts做单独追踪计算，防止混淆，便于后续追踪。
+
+events.py
+1. 修改了部分event函数
+2. 删除了abandonment函数，主程序并未调用
+
+transition.py
+1. 删除土壤库单衰减过程，采用双段衰减，rapid+slow processes
+
+
+
+2025.12.17
+代码结构重构，分散成小文件，方便维护
+存在问题：
+·def step_decay_split(t, dt, tau, S, E, t1, t2)目前存在问题，在clear后，有fast和slow过程，但是相对应的SOCend采用的是一个值，需要区分
+
+·_simulate_harvest()未调用
+
+·events造成的碳库转移和decay逻辑需要重构
+
+·events发生之后，src和dst的biomass需要在carbon_pools中变化。soil中是否要相应变化？
+例如：# substract cleared biomass from the grid 
+carbon_pools_t1[src]["biomass"] -= float(fluxes.get('loss_biomass', 0.0))
+目前clear和harvest只有biomass_to_soil这部分，src类型不用减去soil。但是在年底计算完transition后，需要在dst中加上变化的soil。但是导致一个问题，dst初始soil是多少？还是加到了总的dst soil中。
+
+·decay和regrowth的计算在for trans_key, area in transitions.items()循环里，导致重复计算。应提到外面，但是这样就不能改变dst src中的soil
+
+2025.11.1
+OutputView.ipynb 将输出summary.nc作图，可视化
+summaryncoutputs.ipynb 将输出summary.nc按年份求和，得到最终总变化
+LULCC_CHN_single.ipynb 单CPU区域计算，目前适配中国区域
+
+
+2025.10.30
+单点计算配置完成，单点运算1850-2020，[Timing] wall=346.431s, cpu=185.828s
+
+2025.10.22
+LULCC1022.ipynb、LULCC_v1.0.py已具备需要的功能，能在单个网格运行。下一步开发网格遍历功能
+1. 实际面积计算是否有问题
+2. PFTmap 从这里下载，目前只用了静态pft：scp ychao@ssh1.lsce.ipsl.fr:/home/orchideeshare/igcmg/IGCM/SRF/PFTMAPS/CMIP6/ESA-LUH2v2/TRENDY2023/PFTmap_2000.nc D:\
+
+2025.10.21
+1. soil_cohorts  和 clear_regrow仅针对clear event，abandon也可以用，后面需要改统一，加一个kind
+2. clear后src的soil部分可能没有减去
+3. LULCC event发生后，biomass和soil的变化如何分配src和dst类型？还是用一个总的biomass和soil库，放所有land use类型的值？
+3. 年末可执行
+# soil：把各 dst 的净额加到 carbon_pools
+for lulc in ['Pr','S','Pa','C','U']:
+    self.carbon_manager.pools[lulc]['soil'] += trans['soil_net'][lulc]
+
+# biomass：把各 dst 的净增量加到 carbon_pools
+for lulc in ['Pr','S','Pa','C','U']:
+    self.carbon_manager.pools[lulc]['biomass'] += trans['bio_net'][lulc]
+
+# products 入库
+self.carbon_manager.pools['P1']   += trans['P1']
+self.carbon_manager.pools['P10']  += trans['P10']
+self.carbon_manager.pools['P100'] += trans['P100']
+
+# 大气（清砍直接排放 + soil 衰减 + product 衰减 −（如果你用增量法，不用在这里减 dB））
+self.carbon_manager.pools['atmo'] += trans['atmo']
+
+
+
+2025.10.17
+transition_pools更改为每个库针对clr aband har有自己的字典
+clearing中，soil_rapid和soil_slow被分配为50% to_soil_total。应为先计算rapid，再计算slow
+abandonment中，ce应为src类型
+
+
+2025.7.28 
+问题：class LULCCSimulator中_simulate_clearing等虽然给出了不同LULCC下各库的变化，但是没有和CarbonPoolManager中的碳库动态变化联系起来，导致各处理各的。
+
+2025.4.23
+Bookkeeping v0.05
+D:\Work\ORCHIDEE\Work\LULCC
+Refactoring code using object-oriented programming
+
+
+2024.8.10
+Bookkeeping v0.01
+First version of bookkeeping model. Use Excel file as input for demostration. Pools, LULC, LULCC are defined. Pool carbon change by LULCC are calculated by simple IF statements. Run at yearly time step, grid scale. 
+
+2024.9.3
+Bookkeeping v0.03
+run at grid scale.
+example shows 5x5 grids
+only consider land cover types: Pr, C
+adding clear, harvest, abadonment, transit LULCCs
+above LULCC events are implicitly considered during transition. e.g., forest to pasture has to clear then transition
+ISSUES: 
+clearing SOC rapid loss occur for next year, but theoretically should be at the starting year of the event. (should add sub time iterations, monthly?)
+LULCC events are not fully captured during transition (need transition data and LULCC data align with LUH2-GCB2022 dataset)
+parameters are attributed to each grid cell using higher dimensional array, can be very resources consuming (loop for each grid cell for whole simulation period?)
+no PFT considered (add PFT and their land cover types)
+
+2024.9.18
+Bookkeeping v0.04
+Input data similiar to LUH2-GCB2022 at 0.25 grid
+example run at single grid
+update model stracture to track all types of transition
+each LULC for a grid is given by its fraction to total grid <=1
+transition is given by fraction of each LULC to another
+management is temporarly not considered in this version
+model is run at very discrete time resolution (10^-12 year in BLUE)
+Using information on pastr in LUH2-GCB2022 as example
+	time span 1000 to 1173
+	grid 170,741	state.variables['secdf'][i,169,740]
+
+

@@ -1,0 +1,595 @@
+#switching between static or dynamic carbon density simulation
+dynamic_carbon_density:
+  enabled: true # "true" dynamic carbon density; "false" static carbon density
+  path: dynamic_carbon_density.parquet
+  base_year: 850
+  min_year_policy: clip
+  max_year_policy: clip
+#carbon densities database
+carbon_density: 
+#15 PFT
+#pool_type: biomass, soil
+#land_cover: v, s, p, c
+#Table S4
+    PFT1:
+        Biomass:
+            v: 200.0
+            s: 150.0
+            p: 18.0
+            c: 5.0
+        Soil: 
+            v: 117.0
+            s: 88.0
+            p: 87.8
+            c: 58.0
+    PFT2:  
+        Biomass:  
+            v: 160.0
+            s: 120.0
+            p: 18.0
+            c: 5.0
+        Soil:  
+            v: 117.0
+            s: 88.0
+            p: 87.8
+            c: 58.0
+    PFT3:  
+        Biomass: 
+            v: 160.0
+            s: 120.0
+            p: 10.0
+            c: 5.0    
+        Soil: 
+            v: 134.0
+            s: 120.0
+            p: 100.5
+            c: 67.0
+    PFT4: 
+        Biomass: 
+            v: 90.0
+            s: 68.0
+            p: 7.0
+            c: 5.0    
+        Soil: 
+            v: 206.0
+            s: 185.0
+            p: 154.5
+            c: 103.0
+    PFT5: 
+        Biomass: 
+            v: 135.0
+            s: 100.0
+            p: 7.0
+            c: 5.0
+        Soil: 
+            v: 134.0
+            s: 120.0
+            p: 100.5
+            c: 67.0
+    PFT6: 
+        Biomass: 
+            v: 90.0
+            s: 68.0
+            p: 7.0
+            c: 5.0    
+        Soil: 
+            v: 206.0
+            s: 185.0
+            p: 154.5
+            c: 103.0
+    PFT7: 
+        Biomass: 
+            v: 90.0
+            s: 68.0
+            p: 7.0
+            c: 5.0
+        Soil: 
+            v: 206.0
+            s: 185.0
+            p: 154.5
+            c: 103.0
+    PFT8: 
+        Biomass: 
+            v: 112.5
+            s: 84.0
+            p: 7.0
+            c: 5.0
+        Soil: 
+            v: 170.0
+            s: 152.5
+            p: 127.5
+            c: 42.5
+    PFT9: 
+        Biomass: 
+            v: 18.0
+            s: 18.0
+            p: 18.0
+            c: 5.0
+        Soil: 
+            v: 42.0
+            s: 42.0
+            p: 42.0
+            c: 21.0
+
+    PFT10: 
+        Biomass: 
+            v: 7.0
+            s: 7.0
+            p: 7.0
+            c: 3.0
+        Soil: 
+            v: 189.0
+            s: 189.0
+            p: 189.0
+            c: 94.0
+
+    PFT11: 
+        Biomass: 
+            v: 27.0
+            s: 27.0
+            p: 18.0
+            c: 5.0
+        Soil: 
+            v: 69.0
+            s: 69.0
+            p: 69.0
+            c: 34.0
+    PFT12: 
+        Biomass: 
+            v: 27.0
+            s: 27.0
+            p: 7.0
+            c: 5.0
+        Soil: 
+            v: 69.0
+            s: 69.0
+            p: 69.0
+            c: 34.0
+    PFT13: 
+        Biomass: 
+            v: 3.0
+            s: 0.0
+            p: 7.0
+            c: 1.0
+        Soil: 
+            v: 204.0
+            s: 204.0
+            p: 204.0
+            c: 101.0
+    PFT14: 
+        Biomass: 
+            v: 0.0
+            s: 0.0
+            p: 0.0
+            c: 0.0
+        Soil: 
+            v: 0.0
+            s: 0.0
+            p: 0.0
+            c: 0.0
+    PFT15: 
+        Biomass: 
+            v: 0.0
+            s: 0.0
+            p: 0.0
+            c: 0.0
+        Soil: 
+            v: 0.0
+            s: 0.0
+            p: 0.0
+            c: 0.0    
+    PFT_U: 
+        Biomass: 
+            U: 0
+        Soil: 
+            U: 0
+
+
+clearing_param:
+#parameters for the clearing process
+#Table S5
+    PFT1:
+        Prod_1: 0.40
+        Prod_10: 0.27
+        Prod_100: 0.00
+        Bio_Soil: 0.33
+        SOC_end: 70
+        t_lapse: 3
+        t_rest: 15
+        f_v: 0.80
+        f_s: 0.60
+    PFT2:
+        Prod_1: 0.40
+        Prod_10: 0.27
+        Prod_100: 0.00
+        Bio_Soil: 0.33
+        SOC_end: 70
+        t_lapse: 3
+        t_rest: 15   
+        f_v: 0.80
+        f_s: 0.60 
+    PFT3:
+        Prod_1: 0.40
+        Prod_10: 0.20
+        Prod_100: 0.07
+        Bio_Soil: 0.33
+        SOC_end: 80
+        t_lapse: 15
+        t_rest: 30  
+        f_v: 0.81
+        f_s: 0.75  
+    PFT4:
+        Prod_1: 0.40
+        Prod_10: 0.20
+        Prod_100: 0.07
+        Bio_Soil: 0.33
+        SOC_end: 160
+        t_lapse: 50
+        t_rest: 50
+        f_v: 0.81
+        f_s: 0.75    
+    PFT5:
+        Prod_1: 0.40
+        Prod_10: 0.20
+        Prod_100: 0.07
+        Bio_Soil: 0.33
+        SOC_end: 80
+        t_lapse: 15
+        t_rest: 30
+        f_v: 0.45
+        f_s: 0.30
+    PFT6:
+        Prod_1: 0.40
+        Prod_10: 0.20
+        Prod_100: 0.07
+        Bio_Soil: 0.33
+        SOC_end: 160
+        t_lapse: 50
+        t_rest: 50
+        f_v: 0.45
+        f_s: 0.30
+    PFT7:
+        Prod_1: 0.40
+        Prod_10: 0.20
+        Prod_100: 0.07
+        Bio_Soil: 0.33
+        SOC_end: 160
+        t_lapse: 50
+        t_rest: 50
+        f_v: 0.80
+        f_s: 0.80
+    PFT8:
+        Prod_1: 0.40
+        Prod_10: 0.20
+        Prod_100: 0.07
+        Bio_Soil: 0.33
+        SOC_end: 41
+        t_lapse: 3
+        t_rest: 15
+        f_v: 0.80
+        f_s: 0.80
+    PFT9:
+        Prod_1: 0.40
+        Prod_10: 0.10
+        Prod_100: 0.00
+        Bio_Soil: 0.50
+        SOC_end: 113
+        t_lapse: 15
+        t_rest: 30
+        f_v: 0.80
+        f_s: 0.80
+    PFT10:
+        Prod_1: 0.50
+        Prod_10: 0.00
+        Prod_100: 0.00
+        Bio_Soil: 0.50
+        SOC_end: 113
+        t_lapse: 15
+        t_rest: 30
+        f_v: 0.80
+        f_s: 0.80
+    PFT11:
+        Prod_1: 0.50
+        Prod_10: 0.00
+        Prod_100: 0.00
+        Bio_Soil: 0.50
+        SOC_end: 25
+        t_lapse: 3
+        t_rest: 15
+        f_v: 0.80
+        f_s: 0.80
+    PFT12:
+        Prod_1: 0.40
+        Prod_10: 0.10
+        Prod_100: 0.00
+        Bio_Soil: 0.50
+        SOC_end: 41
+        t_lapse: 15
+        t_rest: 30
+        f_v: 0.80
+        f_s: 0.80
+    PFT13:
+        Prod_1: 0.40
+        Prod_10: 0.10
+        Prod_100: 0.00
+        Bio_Soil: 0.50
+        SOC_end: 121
+        t_lapse: 15
+        t_rest: 30
+        f_v: 0.80
+        f_s: 0.80
+    PFT14:
+        Prod_1: 0.00
+        Prod_10: 0.00
+        Prod_100: 0.00
+        Bio_Soil: 0.00
+        SOC_end: 0
+        t_lapse: 0
+        t_rest: 0
+        f_v: 0.00
+        f_s: 0.00
+    PFT15:
+        Prod_1: 0.00
+        Prod_10: 0.00
+        Prod_100: 0.00
+        Bio_Soil: 0.00
+        SOC_end: 0
+        t_lapse: 0
+        t_rest: 0
+        f_v: 0.00
+        f_s: 0.00
+
+
+abandonment_param:
+#parameters for the abandonment process
+#Table S6
+    PFT1:
+        t_biomass: 50
+        t_soil: 15
+    PFT2:
+        t_biomass: 50
+        t_soil: 15
+    PFT3:
+        t_biomass: 50
+        t_soil: 40
+    PFT4:
+        t_biomass: 50
+        t_soil: 35
+    PFT5:
+        t_biomass: 50
+        t_soil: 40
+    PFT6:
+        t_biomass: 50
+        t_soil: 35
+    PFT7:
+        t_biomass: 50
+        t_soil: 35
+    PFT8:
+        t_biomass: 25
+        t_soil: 15
+    PFT9:
+        t_biomass: 10
+        t_soil: 45
+    PFT10:
+        t_biomass: 10
+        t_soil: 45
+    PFT11:
+        t_biomass: 5
+        t_soil: 15
+    PFT12:
+        t_biomass: 10
+        t_soil: 45
+    PFT13:
+        t_biomass: 50
+        t_soil: 45
+    PFT14:
+        t_biomass: 0
+        t_soil: 0
+    PFT15:
+        t_biomass: 0
+        t_soil: 0
+        
+
+harvest_param:
+#parameters for the harvest process
+#Table S7
+    PFT1:
+        Prod_1: 0.9
+        Prod_10: 0.04
+        Prod_100: 0.06
+        Bio_Soil_v: 0.79
+        Bio_Soil_s: 0.71
+        SOC_min_v: 76.05
+        SOC_min_s: 57.2
+        t_lapse: 5
+        f_v: 0.80
+        f_s: 0.60
+    PFT2:
+        Prod_1: 0.9
+        Prod_10: 0.04
+        Prod_100: 0.06
+        Bio_Soil_v: 0.86
+        Bio_Soil_s: 0.81
+        SOC_min_v: 76.05
+        SOC_min_s: 57.2
+        t_lapse: 5
+        f_v: 0.80
+        f_s: 0.60
+    PFT3:
+        Prod_1: 0.4
+        Prod_10: 0.24
+        Prod_100: 0.36
+        Bio_Soil_v: 0.81
+        Bio_Soil_s: 0.75
+        SOC_min_v: 67
+        SOC_min_s: 60
+        t_lapse: 10
+        f_v: 0.81
+        f_s: 0.75
+    PFT4:
+        Prod_1: 0.4
+        Prod_10: 0.24
+        Prod_100: 0.36
+        Bio_Soil_v: 0.87
+        Bio_Soil_s: 0.82
+        SOC_min_v: 175.1
+        SOC_min_s: 157.25
+        t_lapse: 15
+        f_v: 0.81
+        f_s: 0.75
+    PFT5:
+        Prod_1: 0.4
+        Prod_10: 0.24
+        Prod_100: 0.36
+        Bio_Soil_v: 0.78
+        Bio_Soil_s: 0.7
+        SOC_min_v: 67
+        SOC_min_s: 60
+        t_lapse: 10
+        f_v: 0.45
+        f_s: 0.30
+    PFT6:
+        Prod_1: 0.4
+        Prod_10: 0.24
+        Prod_100: 0.36
+        Bio_Soil_v: 0.87
+        Bio_Soil_s: 0.82
+        SOC_min_v: 175.1
+        SOC_min_s: 157.25
+        t_lapse: 15
+        f_v: 0.45
+        f_s: 0.30
+    PFT7:
+        Prod_1: 0.4
+        Prod_10: 0.24
+        Prod_100: 0.36
+        Bio_Soil_v: 0.87
+        Bio_Soil_s: 0.82
+        SOC_min_v: 175.1
+        SOC_min_s: 157.25
+        t_lapse: 15
+        f_v: 0.80
+        f_s: 0.80
+    PFT8:
+        Prod_1: 1
+        Prod_10: 0
+        Prod_100: 0
+        Bio_Soil_v: 0.86
+        Bio_Soil_s: 0.81
+        SOC_min_v: 44.85
+        SOC_min_s: 44.85
+        t_lapse: 5
+        f_v: 0.80
+        f_s: 0.80
+    PFT9:
+        Prod_1: 1
+        Prod_10: 0
+        Prod_100: 0
+        Bio_Soil_v: 0.78
+        Bio_Soil_s: 0.7
+        SOC_min_v: 94.5
+        SOC_min_s: 94.5
+        t_lapse: 10
+        f_v: 0.80
+        f_s: 0.80
+    PFT10:
+        Prod_1: 1
+        Prod_10: 0
+        Prod_100: 0
+        Bio_Soil_v: 0.78
+        Bio_Soil_s: 0.7
+        SOC_min_v: 94.5
+        SOC_min_s: 94.5
+        t_lapse: 10
+        f_v: 0.80
+        f_s: 0.80
+    PFT11:
+        Prod_1: 1
+        Prod_10: 0
+        Prod_100: 0
+        Bio_Soil_v: 0.86
+        Bio_Soil_s: 0.81
+        SOC_min_v: 27.3
+        SOC_min_s: 27.3
+        t_lapse: 5
+        f_v: 0.80
+        f_s: 0.80
+    PFT12:
+        Prod_1: 1
+        Prod_10: 0
+        Prod_100: 0
+        Bio_Soil_v: 0.78
+        Bio_Soil_s: 0.7
+        SOC_min_v: 34.5
+        SOC_min_s: 34.5
+        t_lapse: 10
+        f_v: 0.80
+        f_s: 0.80
+    PFT13:
+        Prod_1: 1
+        Prod_10: 0
+        Prod_100: 0
+        Bio_Soil_v: 0.87
+        Bio_Soil_s: 0.82
+        SOC_min_v: 173.4
+        SOC_min_s: 173.4
+        t_lapse: 15
+        f_v: 0.80
+        f_s: 0.80
+    PFT14:
+        Prod_1: 0
+        Prod_10: 0
+        Prod_100: 0
+        Bio_Soil_v: 0
+        Bio_Soil_s: 0
+        SOC_min_v: 0
+        SOC_min_s: 0
+        t_lapse: 0
+        f_v: 0.00
+        f_s: 0.00
+    PFT15:
+        Prod_1: 0
+        Prod_10: 0
+        Prod_100: 0
+        Bio_Soil_v: 0
+        Bio_Soil_s: 0
+        SOC_min_v: 0
+        SOC_min_s: 0
+        t_lapse: 0
+        f_v: 0.00
+        f_s: 0.00
+
+
+LUH2toLULC:
+    primf: v # v
+    primn: v # v   #primn may not belong to v
+    secdf: s # s
+    secdn: s # s   #secdn may not belong to s
+    urban: U
+    c3ann: c
+    c4ann: c
+    c3per: c
+    c4per: c
+    c3nfx: c
+    pastr: p
+    range: p
+    #secmb: secondary mean age (years)
+    #secma: secondary mean biomass carbon density (kg m-2)
+
+numtoLUH2Type:
+    1: primf
+    2: primn
+    3: secdf
+    4: secdn
+    5: urban
+    6: c3ann
+    7: c4ann
+    8: c3per
+    9: c4per
+    10: c3nfx
+    11: pastr
+    12: range
+    # 12:'secmb',
+    # 13:'secma'
+
+forest_pft_indices: [1,2,3,4,5,6,7,8]
