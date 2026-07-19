@@ -567,6 +567,11 @@ class LULCCSimulator:
             out_vars = {}
             for name in state_vars + FORMAL_OUTPUT_KEYS:
                 out_vars[name] = ds.createVariable(name, "f8", ("time", "lat", "lon"), **kwargs)
+
+            # Keep a fixed output order so each grid cell can be converted to
+            # a dense time-by-variable array before block-writing to NetCDF.
+            output_names = tuple(out_vars.keys())
+
             # Minimal metadata for downstream scripts
             out_vars["Gross_Sources"].long_name = "Gross positive LULCC carbon flux to atmosphere"
             out_vars["Gross_Sinks"].long_name = "Gross negative LULCC carbon uptake from atmosphere"
@@ -611,10 +616,24 @@ class LULCCSimulator:
                     yearly = self.run_simulation(years, i, j, start_year_idx=start_year_idx)
     
                     upto = min(T, len(yearly))
-                    for t in range(upto):
-                        rec = yearly[t]
-                        for name, var in out_vars.items():
-                            var[t, ii, jj] = float(rec.get(name, 0.0))
+
+                    # Convert all annual records for this grid cell to one
+                    # contiguous in-memory block: [time, output_variable].
+                    # This preserves the existing values while avoiding one
+                    # NetCDF/HDF5 call for every year and variable.
+                    grid_series = np.empty(
+                        (upto, len(output_names)),
+                        dtype=np.float64,
+                    )
+                    for t, rec in enumerate(yearly[:upto]):
+                        grid_series[t, :] = [
+                            float(rec.get(name, 0.0))
+                            for name in output_names
+                        ]
+
+                    # Write one complete time series per output variable.
+                    for k, name in enumerate(output_names):
+                        out_vars[name][:upto, ii, jj] = grid_series[:, k]
 
                     vdone[ii, jj] = 1  # done flag
     
