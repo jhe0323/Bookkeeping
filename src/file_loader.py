@@ -239,114 +239,286 @@ class FileLoader:
         target_lat_asc: np.ndarray,
         target_lon_180: np.ndarray,
         target_lon_res: float,
+        expected_n_pft: Optional[int] = None,
         lat_slice: slice = None,
         lon_slice: slice = None,
     ) -> np.ndarray:
-        
+        """Load a dominant or fractional PFT map and return PFT fractions.
+
+        The returned array always has shape ``(lat, lon, pft)``. Two input
+        layouts are supported:
+
+        1. dominant map: ``(lat, lon)`` with 1-based PFT codes;
+        2. fractional map: any 3-D ordering of ``pft``, ``lat`` and ``lon``.
+
+        Fractional values are cleaned and normalized independently in each
+        grid cell. A coarser PFT map may be copied to a finer model grid by
+        nearest cell centre. A finer PFT map is not silently aggregated to a
+        coarser model grid because that operation should be area weighted.
+
+        ``lat_slice`` and ``lon_slice`` are retained for call compatibility;
+        alignment is performed directly from the supplied target coordinates.
+        """
+        del lat_slice, lon_slice  # target coordinates already describe the local slice
+
+        target_lat_asc = np.asarray(target_lat_asc, dtype=float).ravel()
+        target_lon_180 = _wrap_lon_180(
+            np.asarray(target_lon_180, dtype=float).ravel()
+        )
+        if target_lat_asc.size == 0 or target_lon_180.size == 0:
+            raise ValueError("Target PFT grid is empty.")
+
+        pft_dim_aliases = {
+            "pft", "pfts", "npft", "veget", "veg", "vegtype",
+            "vegetation", "class", "classes", "type", "types",
+        }
+        time_aliases = {"time", "time_counter", "year"}
+        lat_aliases = {"lat", "latitude", "y"}
+        lon_aliases = {"lon", "longitude", "x"}
+
+        def nearest_indices(source, target, *, periodic=False):
+            source = np.asarray(source, dtype=float).ravel()
+            target = np.asarray(target, dtype=float).ravel()
+            if source.size == 0:
+                raise ValueError("Empty source coordinate.")
+
+            out = np.empty(target.size, dtype=np.int64)
+            for k, value in enumerate(target):
+                if periodic:
+                    diff = np.abs(((source - value + 180.0) % 360.0) - 180.0)
+                else:
+                    diff = np.abs(source - value)
+                out[k] = int(np.nanargmin(diff))
+            return out
+
+        def coord_resolution(values):
+            values = np.asarray(values, dtype=float).ravel()
+            if values.size < 2:
+                return np.nan
+            unique = np.unique(np.round(values, 10))
+            if unique.size < 2:
+                return np.nan
+            return abs(float(np.median(np.diff(np.sort(unique)))))
+
+        def choose_variable(ds):
+            if pft_var is not None:
+                if pft_var not in ds.variables:
+                    raise KeyError(
+                        f"PFT variable '{pft_var}' not found in {pft_path}. "
+                        f"Available variables: {list(ds.variables)}"
+                    )
+                return pft_var
+
+            preferred = [
+                "pft_fraction", "pft_frac", "pft_fractions",
+                "vegetation_fraction", "vegetfrac", "maxvegetfrac",
+                "pft", "PFT", "dominant_pft", "pft_map",
+                "pft_dominant", "dominantPFT",
+            ]
+            for name in preferred:
+                if name in ds.variables:
+                    return name
+
+            candidates = []
+            for name, candidate in ds.variables.items():
+                dims = {d.lower() for d in candidate.dimensions}
+                non_time_ndim = sum(d.lower() not in time_aliases for d in candidate.dimensions)
+                has_lat = bool(dims & lat_aliases)
+                has_lon = bool(dims & lon_aliases)
+                if has_lat and has_lon and non_time_ndim in (2, 3):
+                    candidates.append(name)
+
+            if len(candidates) == 1:
+                return candidates[0]
+            raise KeyError(
+                "Cannot infer the PFT data variable. Pass pft_var explicitly. "
+                f"Candidate variables: {candidates}; all variables: {list(ds.variables)}"
+            )
+
         ds = nc.Dataset(pft_path, "r")
         try:
-            if pft_var is None:
-                common = ["maxvegetfrac", "pft", "PFT", "dominant_pft", "pft_map", "pft_dominant", "dominantPFT"]
-                pft_var = next((n for n in common if n in ds.variables), None)
+            chosen_var = choose_variable(ds)
+            var = ds.variables[chosen_var]
+            original_dims = list(var.dimensions)
 
-            var = ds.variables[pft_var]
-            dim_names = list(var.dimensions)
+            lat_name, lon_name = _guess_lat_lon_names(ds)
+            src_lat = _as_1d_coord(ds.variables[lat_name], coord_type="lat")
+            src_lon_raw = _as_1d_coord(ds.variables[lon_name], coord_type="lon")
+            src_lon_180 = _wrap_lon_180(src_lon_raw)
 
-            lat_name = next((n for n in ("lat", "latitude", "y") if n in ds.variables), None)
-            lon_name = next((n for n in ("lon", "longitude", "x") if n in ds.variables), None)
+            src_lat_res = coord_resolution(src_lat)
+            src_lon_res = coord_resolution(src_lon_180)
+            target_lat_res = coord_resolution(target_lat_asc)
+            target_lon_res_eff = (
+                float(target_lon_res)
+                if np.isfinite(target_lon_res) and target_lon_res > 0
+                else coord_resolution(target_lon_180)
+            )
 
-            lat = np.asarray(ds.variables[lat_name][:], dtype=float).ravel()
-            lon = np.asarray(ds.variables[lon_name][:], dtype=float).ravel()
-            src_lat_desc = bool(lat.size >= 2 and lat[0] > lat[-1])
+            # Do not disguise a required area-weighted aggregation as nearest-neighbour.
+            if (
+                np.isfinite(src_lat_res)
+                and np.isfinite(target_lat_res)
+                and src_lat_res < target_lat_res * (1.0 - 1e-6)
+            ) or (
+                np.isfinite(src_lon_res)
+                and np.isfinite(target_lon_res_eff)
+                and src_lon_res < target_lon_res_eff * (1.0 - 1e-6)
+            ):
+                raise ValueError(
+                    "The PFT map is finer than the model grid. Pre-aggregate PFT "
+                    "fractions with area weighting before loading. "
+                    f"source_res=({src_lat_res}, {src_lon_res}), "
+                    f"target_res=({target_lat_res}, {target_lon_res_eff})"
+                )
 
-            if lat_slice is None: lat_slice = slice(0, lat.size)
-            if lon_slice is None: lon_slice = slice(0, lon.size)
+            lat_indices = nearest_indices(src_lat, target_lat_asc, periodic=False)
+            lon_indices = nearest_indices(src_lon_180, target_lon_180, periodic=True)
 
-            if src_lat_desc:
-                i0_asc = lat_slice.start if lat_slice.start is not None else 0
-                i1_asc = lat_slice.stop if lat_slice.stop is not None else lat.size
-                pft_lat_indices = np.arange(lat.size)[slice(lat.size - i1_asc, lat.size - i0_asc)]
-            else:
-                pft_lat_indices = np.arange(lat.size)[lat_slice]
+            lat_indexer = _optimize_indices_to_slice(lat_indices)
+            lon_indexer = _optimize_indices_to_slice(lon_indices)
 
-            lon_res = abs(float(np.median(np.diff(lon))))
-            nlon_internal = int(round(360.0 / lon_res))
-            lon_internal_full = np.linspace(-180.0 + 0.5 * lon_res, 180.0 - 0.5 * lon_res, nlon_internal)
-            target_lon = lon_internal_full[lon_slice]
-            lon_180 = _wrap_lon_180(lon)
-
-            pft_lon_indices = []
-            for x in target_lon:
-                jj = int(np.nanargmin(np.abs(lon_180 - x)))
-                diff = abs(lon_180[jj] - x)
-                if diff > 0.51 * lon_res:
-                    raise ValueError(
-                        f"Cannot map PFT internal lon {x} to source lon. "
-                        f"nearest={lon[jj]}, wrapped={lon_180[jj]}, diff={diff}"
-                    )
-                pft_lon_indices.append(jj)
-            pft_lon_indices = np.asarray(pft_lon_indices, dtype=np.int64)
-
-            # 生成优化后的切片
-            lat_slice_opt = _optimize_indices_to_slice(pft_lat_indices)
-            lon_slice_opt = _optimize_indices_to_slice(pft_lon_indices)
+            # Coordinate variable names and data dimension names are not always identical.
+            dims_lower = [d.lower() for d in original_dims]
+            lat_axis_original = next(
+                (ax for ax, d in enumerate(dims_lower) if d in lat_aliases),
+                None,
+            )
+            lon_axis_original = next(
+                (ax for ax, d in enumerate(dims_lower) if d in lon_aliases),
+                None,
+            )
+            if lat_axis_original is None or lon_axis_original is None:
+                raise ValueError(
+                    f"PFT variable '{chosen_var}' must contain lat/lon dimensions. "
+                    f"dimensions={original_dims}"
+                )
 
             index = []
-            for d in dim_names:
+            remaining_dims = []
+            for d in original_dims:
                 dl = d.lower()
-                if dl in ("time", "time_counter"):
+                if dl in time_aliases:
                     index.append(0)
-                elif d == lat_name or dl in ("lat", "latitude", "y"):
-                    index.append(lat_slice_opt)
-                elif d == lon_name or dl in ("lon", "longitude", "x"):
-                    index.append(lon_slice_opt)
+                elif dl in lat_aliases:
+                    index.append(lat_indexer)
+                    remaining_dims.append(d)
+                elif dl in lon_aliases:
+                    index.append(lon_indexer)
+                    remaining_dims.append(d)
                 else:
                     index.append(slice(None))
+                    remaining_dims.append(d)
 
             arr = var[tuple(index)]
-            
             if hasattr(arr, "filled"):
                 arr = arr.filled(0.0)
-            arr = np.asarray(arr, dtype=np.float32)
-            
-            dim_names = [d for d in dim_names if d.lower() not in ("time", "time_counter")]
+            arr = np.asarray(arr)
 
         finally:
             ds.close()
 
-        if arr.ndim == 3:
-            dims_lower = [d.lower() for d in dim_names]
-            pft_axis, lat_axis, lon_axis = None, None, None
-            for ax, d in enumerate(dims_lower):
-                if d in ("veget", "pft", "class", "classes"): pft_axis = ax
-                elif d in ("lat", "latitude", "y"): lat_axis = ax
-                elif d in ("lon", "longitude", "x"): lon_axis = ax
+        dims_lower = [d.lower() for d in remaining_dims]
+        lat_axis = next((ax for ax, d in enumerate(dims_lower) if d in lat_aliases), None)
+        lon_axis = next((ax for ax, d in enumerate(dims_lower) if d in lon_aliases), None)
+        if lat_axis is None or lon_axis is None:
+            raise ValueError(
+                f"Cannot infer lat/lon axes after reading PFT map. "
+                f"shape={arr.shape}, dimensions={remaining_dims}"
+            )
+
+        nlat_t = target_lat_asc.size
+        nlon_t = target_lon_180.size
+
+        if arr.ndim == 2:
+            # Legacy dominant map -> one-hot fraction cube.
+            if expected_n_pft is None:
+                raise ValueError(
+                    "expected_n_pft is required when loading a dominant PFT map."
+                )
+            arr = np.moveaxis(arr, (lat_axis, lon_axis), (0, 1))
+            if arr.shape != (nlat_t, nlon_t):
+                raise ValueError(
+                    f"Dominant PFT shape mismatch: arr={arr.shape}, "
+                    f"target=({nlat_t}, {nlon_t})"
+                )
+
+            dominant = np.asarray(arr, dtype=np.float64)
+            rounded = np.rint(dominant)
+            integer_like = np.isfinite(dominant) & (np.abs(dominant - rounded) <= 1e-5)
+            codes = rounded.astype(np.int64, copy=False)
+            valid = integer_like & (codes >= 1) & (codes <= int(expected_n_pft))
+
+            fractions = np.zeros(
+                (nlat_t, nlon_t, int(expected_n_pft)),
+                dtype=np.float32,
+            )
+            rows, cols = np.nonzero(valid)
+            fractions[rows, cols, codes[rows, cols] - 1] = 1.0
+            mode = "dominant->fraction"
+
+        elif arr.ndim == 3:
+            pft_axis = next(
+                (ax for ax, d in enumerate(dims_lower) if d in pft_dim_aliases),
+                None,
+            )
+            if pft_axis is None and expected_n_pft is not None:
+                candidates = [
+                    ax for ax, size in enumerate(arr.shape)
+                    if ax not in (lat_axis, lon_axis) and size == int(expected_n_pft)
+                ]
+                if len(candidates) == 1:
+                    pft_axis = candidates[0]
 
             if pft_axis is None:
-                candidate_axes = [ax for ax, n in enumerate(arr.shape) if n == 15]
-                if len(candidate_axes) == 1: pft_axis = candidate_axes[0]
+                remaining_axes = [ax for ax in range(3) if ax not in (lat_axis, lon_axis)]
+                if len(remaining_axes) == 1:
+                    pft_axis = remaining_axes[0]
 
-            if lat_axis is None or lon_axis is None or pft_axis is None:
+            if pft_axis is None:
                 raise ValueError(
-                    f"Cannot infer axes for PFT map. shape={arr.shape}, dims={dim_names}"
+                    f"Cannot infer PFT axis. shape={arr.shape}, dimensions={remaining_dims}"
                 )
 
-            arr = np.moveaxis(arr, (lat_axis, lon_axis, pft_axis), (0, 1, 2))
-            if src_lat_desc: arr = np.flip(arr, axis=0)
+            fractions = np.moveaxis(
+                arr,
+                (lat_axis, lon_axis, pft_axis),
+                (0, 1, 2),
+            ).astype(np.float32, copy=False)
 
-        nlat_t, nlon_t = target_lat_asc.size, target_lon_180.size
-        
-        if arr.ndim == 3:
-            if arr.shape[0] != nlat_t or arr.shape[1] != nlon_t:
+            if fractions.shape[:2] != (nlat_t, nlon_t):
                 raise ValueError(
-                    f"PFT local shape mismatch: arr={arr.shape}, "
+                    f"Fractional PFT shape mismatch: arr={fractions.shape}, "
                     f"target=({nlat_t}, {nlon_t}, npft)"
                 )
-                
-            arr = np.where(np.isfinite(arr), arr, 0.0)
-            arr[arr < 0.0] = 0.0
-            s = arr.sum(axis=2, keepdims=True)
-            ok = s > 0.0
-            arr = np.divide(arr, s, out=np.zeros_like(arr), where=ok)
+            if expected_n_pft is not None and fractions.shape[2] != int(expected_n_pft):
+                raise ValueError(
+                    f"PFT map contains {fractions.shape[2]} classes, but the current "
+                    f"parameter configuration contains {expected_n_pft}."
+                )
 
-        return arr
+            fractions = np.where(np.isfinite(fractions), fractions, 0.0)
+            fractions[fractions < 0.0] = 0.0
+            sums = fractions.sum(axis=2, keepdims=True, dtype=np.float64)
+            fractions = np.divide(
+                fractions,
+                sums,
+                out=np.zeros_like(fractions),
+                where=sums > 0.0,
+            )
+            mode = "fraction"
+
+        else:
+            raise ValueError(
+                f"Unsupported PFT variable rank after removing time: ndim={arr.ndim}, "
+                f"shape={arr.shape}, dimensions={remaining_dims}. "
+                "Expected a 2-D dominant map or a 3-D fractional map."
+            )
+
+        zero_cells = int(np.count_nonzero(fractions.sum(axis=2) <= 0.0))
+        print(
+            f"[PFT] {pft_path}: var={chosen_var}, mode={mode}, "
+            f"shape={fractions.shape}, zero_fraction_cells={zero_cells}",
+            flush=True,
+        )
+        return fractions

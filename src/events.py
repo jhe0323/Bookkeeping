@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
+import numpy as np
+
 from src.parameter_loader import ParameterLoader
 from src.carbon_pools_init import (
     cover_index,
@@ -29,6 +31,19 @@ def _diag_add(diag: Optional[dict], key: str, value: float) -> None:
 def _is_forest_pft(p: int, params: ParameterLoader) -> bool:
     """Return whether a zero-based PFT index is configured as forest."""
     return p in params.get_forest_pfts()
+
+
+def _active_source_pfts(pft_grid, frac_area, j_src: int) -> np.ndarray:
+    """Return PFT indices that currently occupy the source land-cover class."""
+    pft_fractions = np.asarray(pft_grid, dtype=float).reshape(-1)
+    area = np.asarray(frac_area)
+    if area.ndim != 2 or area.shape[1] != pft_fractions.size:
+        raise ValueError(
+            f"frac_area shape {area.shape} is incompatible with "
+            f"{pft_fractions.size} PFT classes."
+        )
+    source = np.asarray(area[j_src, :], dtype=float)
+    return np.flatnonzero(np.isfinite(source) & (source > 0.0))
 
 def simulate_clearing(
     loss_biomass: float,
@@ -148,7 +163,7 @@ def apply_clearing(
     if LULC_frac[src] < 0.0:
         LULC_frac[src] = 0.0
 
-    for p in range(len(pft_grid)):
+    for p in _active_source_pfts(pft_grid, frac_area, j_src):
         a_src_p = float(frac_area[j_src, p])
         if a_src_p <= 0.0:
             continue
@@ -305,7 +320,7 @@ def apply_abandonment(
     if LULC_frac[src] < 0.0:
         LULC_frac[src] = 0.0
 
-    for p in range(len(pft_grid)):
+    for p in _active_source_pfts(pft_grid, frac_area, j_src):
         a_src_p = float(frac_area[j_src, p])
         if a_src_p <= 0.0:
             continue
@@ -432,7 +447,7 @@ def apply_others(
     if LULC_frac[src] < 0.0:
         LULC_frac[src] = 0.0
 
-    for p in range(len(pft_grid)):
+    for p in _active_source_pfts(pft_grid, frac_area, j_src):
         a_src_p = float(frac_area[j_src, p])
         if a_src_p <= 0.0:
             continue

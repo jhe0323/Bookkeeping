@@ -33,6 +33,31 @@ N_POOL_RELEASE = len(pool_index_release)
 N_COVER = len(cover_index)
 N_HISTORY = len(history_index)
 
+
+def normalize_pft_fractions(pft_grid) -> np.ndarray:
+    """Return a clean, normalized PFT-fraction vector for one grid cell.
+
+    The current model configuration uses ``N_PFT`` classes. Missing, negative
+    and non-finite values are set to zero. For backward compatibility, a cell
+    with no valid PFT information falls back to PFT 1.
+    """
+    fractions = np.asarray(pft_grid, dtype=np.float64).reshape(-1).copy()
+    if fractions.size != N_PFT:
+        raise ValueError(
+            f"Expected {N_PFT} PFT fractions, got {fractions.size}. "
+            "The PFT map and parameter YAML must use the same class order."
+        )
+
+    fractions[~np.isfinite(fractions)] = 0.0
+    fractions[fractions < 0.0] = 0.0
+    total = float(fractions.sum())
+    if total > 0.0:
+        fractions /= total
+    else:
+        fractions[:] = 0.0
+        fractions[0] = 1.0
+    return fractions
+
 def resolve_n_time(*, n_time: Optional[int] = None, years: Optional[int] = None) -> int:
     """
     Resolve the size of the time dimension used by pool arrays.
@@ -83,11 +108,12 @@ def initialize_Cbar(
       Notes:
       * i: B, SS
       * j: v, s, p, c
-      * l: 1, 2, ..., 11
+      * l: 1, 2, ..., 15
       * At initialization, assume the system starts at equilibrium:
           Cbar filled from initial areas and carbon densities.
     """
     n_time_resolved = resolve_n_time(n_time=n_time, years=years)
+    pft_fractions = normalize_pft_fractions(pft_grid)
     C_bar = np.zeros((n_time_resolved, N_POOL_CBAR, N_COVER, N_PFT), dtype=float)
 
     for land, frac_land in initial_land_frac.items():
@@ -110,8 +136,8 @@ def initialize_Cbar(
             C_bar[0, 1, j, 0] = area * rho_S
             continue
 
-        for p in range(N_PFT):
-            frac_lp = frac_land * pft_grid[p]
+        for p in np.flatnonzero(pft_fractions > 0.0):
+            frac_lp = frac_land * pft_fractions[p]
             if frac_lp <= 0:
                 continue
 
@@ -134,32 +160,33 @@ def initialize_Delta(*, n_time: Optional[int] = None, years: Optional[int] = Non
       * i: B, SS, SR, P1, P10, P100, A
       * j: v, s, p, c
       * k: l, h, a, g
-      * l: 1, 2, ..., 11
+      * l: 1, 2, ..., 15
     """
     n_time_resolved = resolve_n_time(n_time=n_time, years=years)
     return np.zeros((n_time_resolved, N_POOL_DELTA, N_COVER, N_HISTORY, N_PFT), dtype=float)
 
 def initialize_frac_area(initial_land_frac, pft_grid) -> np.ndarray:
+    """Initialize land-cover-by-PFT fractional area ``frac_area[j, p]``.
+
+    Each land-cover fraction is split by the normalized fractional PFT map:
+    ``frac_area[land, pft] = land_fraction * pft_fraction``.
     """
-    Initialize fractional area array frac_area[j, l]
-    Returns: np.ndarray
-    Array with shape (N_COVER, N_PFT)
-    Notes:
-      * j: v, s, p, c
-      * l: 1, 2, ..., 11
-    """
+    pft_fractions = normalize_pft_fractions(pft_grid)
     frac_area = np.zeros((N_COVER, N_PFT), dtype=float)
+
     for land, frac_land in initial_land_frac.items():
         if land not in cover_index:
             continue
-        j = cover_index[land]
-
-        if land == "U":
-            frac_area[j, 0] = frac_land
+        frac_land = float(frac_land)
+        if not np.isfinite(frac_land) or frac_land <= 0.0:
             continue
 
-        for p in range(N_PFT):
-            frac_area[j, p] = frac_land * pft_grid[p]
+        j = cover_index[land]
+        if land == "U":
+            # Urban is not PFT-resolved in the current parameterization.
+            frac_area[j, 0] = frac_land
+        else:
+            frac_area[j, :] = frac_land * pft_fractions
 
     return frac_area
 
@@ -171,7 +198,7 @@ def initialize_dC_bar(*, n_time: Optional[int] = None, years: Optional[int] = No
     Notes:
       * i: B, SS
       * j: v, s, p, c
-      * l: 1, 2, ..., 11
+      * l: 1, 2, ..., 15
     """
     n_time_resolved = resolve_n_time(n_time=n_time, years=years)
     return np.zeros((n_time_resolved, N_POOL_CBAR, N_COVER, N_PFT), dtype=float)
@@ -185,7 +212,7 @@ def initialize_dDelta(*, n_time: Optional[int] = None, years: Optional[int] = No
       * i: B, SS
       * j: v, s, p, c
       * k: l, h, a, g
-      * l: 1, 2, ..., 11
+      * l: 1, 2, ..., 15
     """
     n_time_resolved = resolve_n_time(n_time=n_time, years=years)
     return np.zeros((n_time_resolved, N_POOL_ACTIVE, N_COVER, N_HISTORY, N_PFT), dtype=float)
@@ -198,7 +225,7 @@ def initialize_dDelta_sum(*, n_time: Optional[int] = None, years: Optional[int] 
     Notes:
       * i: B, SS
       * j: v, s, p, c
-      * l: 1, 2, ..., 11
+      * l: 1, 2, ..., 15
     """
     n_time_resolved = resolve_n_time(n_time=n_time, years=years)
     return np.zeros((n_time_resolved, N_POOL_RELEASE, N_COVER, N_PFT), dtype=float)
@@ -211,7 +238,7 @@ def initialize_dC_released(*, n_time: Optional[int] = None, years: Optional[int]
     Notes:
       * i: B, SS
       * j: v, s, p, c
-      * l: 1, 2, ..., 11
+      * l: 1, 2, ..., 15
     """
     n_time_resolved = resolve_n_time(n_time=n_time, years=years)
     return np.zeros((n_time_resolved, N_POOL_RELEASE, N_COVER, N_PFT), dtype=float)

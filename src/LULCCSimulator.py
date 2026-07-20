@@ -88,6 +88,7 @@ class LULCCSimulator:
         trans_path: str = "transitions.nc",
         *,
         experiment_path: Optional[str] = None,
+        pft_var: Optional[str] = None,
         lat_slice: slice = None,
         lon_slice: slice = None,
         area_unit: str = "ha", # using ha for Qing et al. (2024) data. BECAREFUL CHANGING TO OTHER UNITS
@@ -105,6 +106,9 @@ class LULCCSimulator:
             PFT map file (required).
         experiment_path : str or None
             Optional experiment YAML overlaid on the base config.
+        pft_var : str or None
+            PFT variable name. If omitted, FileLoader auto-detects a dominant
+            or fractional PFT variable.
         area_unit : str
             "m2" (default), "ha", or "km2".
         """
@@ -162,10 +166,11 @@ class LULCCSimulator:
         # PFT map. FileLoader will infer lat/lon conventions and align to the internal grid.
         self.pft_map = self.loader.load_pft_map(
             pft_path,
-            pft_var="maxvegetfrac",
+            pft_var=pft_var,
             target_lat_asc=self._latitudes,
             target_lon_180=self._longitudes,
             target_lon_res=self.lon_res,
+            expected_n_pft=self.params.n_pft,
             lat_slice=lat_slice,
             lon_slice=lon_slice,
         )
@@ -239,45 +244,46 @@ class LULCCSimulator:
         return i, j
 
     def _get_cell_pft_grid(self, lat_idx: int, lon_idx: int) -> np.ndarray:
-        i, j = self._normalize_ij(lat_idx, lon_idx)
+        """Return normalized PFT fractions for one model grid cell.
 
-        n_pft = self.params.n_pft
+        ``FileLoader`` now normally returns a unified ``(lat, lon, pft)``
+        fraction cube. Scalar handling is retained only for compatibility with
+        older in-memory objects.
+        """
+        i, j = self._normalize_ij(lat_idx, lon_idx)
+        n_pft = int(self.params.n_pft)
 
         if self.pft_map is None:
             out = np.zeros(n_pft, dtype=np.float64)
             out[0] = 1.0
             return out
 
-        vals = self.pft_map[i, j]
-
-        # multi-PFT fraction map: vals.shape = (n_pft,)
-        if np.ndim(vals) == 1:
-            out = np.asarray(vals, dtype=np.float64).copy()
-            if out.size != n_pft:
-                raise ValueError(f"pft_map last dim = {out.size}, but params.n_pft = {n_pft}")
-
-        # legacy dominant-pft map
-        else:
+        vals = np.asarray(self.pft_map[i, j])
+        if vals.ndim == 0:
+            # Compatibility path for a legacy 1-based dominant code.
             out = np.zeros(n_pft, dtype=np.float64)
-            if not np.isfinite(vals):
-                out[0] = 1.0
-                return out
-
-            p = int(vals)
-            if 1 <= p <= n_pft:
-                out[p - 1] = 1.0
-            else:
-                out[0] = 1.0
+            value = float(vals)
+            if np.isfinite(value):
+                pft_code = int(round(value))
+                if abs(value - pft_code) <= 1e-5 and 1 <= pft_code <= n_pft:
+                    out[pft_code - 1] = 1.0
+        else:
+            out = np.asarray(vals, dtype=np.float64).reshape(-1).copy()
+            if out.size != n_pft:
+                raise ValueError(
+                    f"PFT map has {out.size} classes at cell ({i}, {j}), "
+                    f"but params.n_pft={n_pft}."
+                )
 
         out[~np.isfinite(out)] = 0.0
         out[out < 0.0] = 0.0
-
-        s = out.sum()
-        if s > 0.0:
-            out /= s
+        total = float(out.sum())
+        if total > 0.0:
+            out /= total
         else:
+            # Preserve the old fallback for a land cell lacking valid PFT data.
+            out[:] = 0.0
             out[0] = 1.0
-
         return out
 
     def _ds_lat_idx(self, i: int, which: str = "state") -> int:
