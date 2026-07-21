@@ -1,121 +1,303 @@
 # LULCC Carbon Bookkeeping Model
 
-A Python-based land-use and land-cover change (LULCC) carbon bookkeeping model for estimating annual carbon-stock changes and land-use change emissions.
+A Python-based land-use and land-cover change (LULCC) carbon bookkeeping model for estimating annual carbon-stock changes, gross sources and sinks, and net land-use change emissions.
+
+The model follows the general bookkeeping framework used by BLUE- and LUCE-type models. Land-use events create departures from equilibrium biomass and soil carbon stocks. These departures are retained in legacy pools and relax over time, allowing historical land-use change to continue affecting present-day carbon fluxes.
 
 The model is driven by:
 
-- LUH2 land-cover states and transitions;
-- LUH2 wood-harvest area and biomass-demand variables;
-- PFT-dependent biomass and soil carbon densities;
-- event-specific carbon-allocation and response parameters.
+- land-cover state data;
+- annual land-use transition data;
+- wood-harvest area or biomass-demand data;
+- plant functional type (PFT) maps;
+- PFT- and land-cover-specific biomass and soil carbon densities;
+- event-specific allocation and response parameters.
 
-The model tracks carbon changes associated with:
-
-- land clearing;
-- agricultural abandonment and regrowth;
-- wood harvest;
-- cropland–pasture conversion;
-- product-pool decay;
-- biomass and soil-carbon relaxation.
-
-The code is designed for comparison with BLUE-, LUCE-, and Global Carbon Budget-style bookkeeping estimates.
+The current `main` branch supports both original LUH2 variables and pre-aggregated `v/s/c/p/U` inputs through run configuration files. Separate code branches are not required.
 
 ---
 
-## 1. Repository structure
+## 1. Model framework
+
+The model separates carbon storage into an equilibrium component and a legacy component.
+
+### 1.1 Equilibrium carbon
+
+The equilibrium carbon array, `C_bar`, contains the carbon stock expected for the current combination of:
+
+- land-cover class;
+- PFT;
+- biomass or slow-soil pool;
+- carbon-density parameter.
+
+The equilibrium pools are:
 
 ```text
-Bookkeeping/
-├── README.md
-├── requirements.txt
-├── .gitignore
-│
-├── src/
-│   ├── __init__.py
-│   ├── main.py
-│   ├── LULCCSimulator.py
-│   ├── events.py
-│   ├── harvest.py
-│   ├── transition.py
-│   ├── file_loader.py
-│   ├── parameter_loader.py
-│   ├── carbon_pools_init.py
-│   └── summary_yearly.py
-│
-├── config/
-│   ├── config.yml
-│   ├── dynamic_carbon_density.parquet
-│   └── experiments/
-│       ├── harvest_area.yml
-│       ├── harvest_bio_strict.yml
-│       └── harvest_bio_forced.yml
-│
-├── server/
-│   ├── __init__.py
-│   ├── main_1deg.py
-│   ├── main_025deg.py
-│   ├── run_single_band.sbatch
-│   └── clean_run.sh
-│
-└── docs/
-    ├── CHANGELOG.txt
-    └── ROADMAP.md
+B   equilibrium biomass carbon
+SS  equilibrium slow-soil carbon
 ```
 
-The repository uses two model branches for different land-use input formats:
+### 1.2 Legacy carbon
 
-| Branch | Land-use input | Main difference |
-|---|---|---|
-| `main` | Original LUH2 state and transition variables | Original LUH2 classes are aggregated inside the model |
-| `vscp` | Pre-aggregated `v/s/c/p/U` state and transition variables | Aggregated variables are read directly |
+Land-use events create differences between current carbon stocks and the equilibrium state. These differences are stored in `Delta`.
 
-Harvest schemes are not separated by Git branch. They are selected through experiment YAML files.
+```text
+B     biomass departure from equilibrium
+SS    slow-soil departure from equilibrium
+SR    rapid soil and slash carbon
+P1    1-year product pool
+P10   10-year product pool
+P100  100-year product pool
+A     direct atmospheric release
+```
+
+Legacy carbon is tracked separately by event history:
+
+```text
+l   clearing
+h   harvest
+a   abandonment
+g   other land-use transitions
+```
+
+The annual model step relaxes these departures toward equilibrium and transfers released carbon to the atmospheric pool.
+
+### 1.3 Annual carbon budget
+
+The main atmospheric budget variables follow:
+
+```text
+Net_Emissions = Gross_Sources + Gross_Sinks
+```
+
+where:
+
+```text
+positive value   atmospheric carbon source
+negative value   atmospheric carbon sink
+```
+
+The system-level carbon total is:
+
+```text
+system_carbon_total
+= biomass_total
++ soil_total
++ P1
++ P10
++ P100
++ atmosphere
+```
+
+For static carbon density and conservative PFT remapping, the system closure error should be close to numerical zero.
 
 ---
 
-## 2. Input-format branches
+## 2. Internal land-cover classes
 
-### 2.1 `main`: original LUH2 input
+The model uses five internal land-cover classes.
 
-The `main` branch reads original LUH2 state variables:
+| Code | Meaning |
+|---|---|
+| `v` | Primary vegetation |
+| `s` | Secondary vegetation |
+| `p` | Pasture and rangeland |
+| `c` | Cropland |
+| `U` | Urban land |
+
+The array order is:
 
 ```text
-primf, primn, secdf, secdn, urban,
-c3ann, c4ann, c3per, c4per, c3nfx,
-pastr, range
+v, s, p, c, U
 ```
 
-The model aggregates these variables internally:
+The mapping from original LUH2 classes is controlled by `LUH2toLULC` in `config/config.yml`.
+
+The current default mapping is:
 
 ```text
-primf + primn                          → v
-secdf + secdn                          → s
-pastr + range                          → p
+primf + primn                           → v
+secdf + secdn                           → s
+pastr + range                           → p
 c3ann + c4ann + c3per + c4per + c3nfx → c
-urban                                  → U
+urban                                   → U
 ```
 
-Original LUH2 state-to-state transition channels are also aggregated inside `LULCCSimulator`.
+The mapping is configurable and should be kept consistent with the PFT map and carbon-density parameterization.
 
-### 2.2 `vscp`: pre-aggregated input
+---
 
-The `vscp` branch reads the following state variables directly:
+## 3. Land-use processes
+
+### 3.1 Clearing
+
+Clearing includes:
 
 ```text
-v
-s
-c
-p
-U
+v → c
+v → p
+s → c
+s → p
 ```
 
-The transition file contains variables named as:
+Clearing removes biomass from the source land-cover class and partitions it among:
+
+- direct atmospheric release;
+- 1-, 10-, and 100-year product pools;
+- rapid soil and slash carbon;
+- slow-soil carbon.
+
+The target agricultural biomass stock is treated as an immediate biomass deficit and subsequently relaxes toward equilibrium.
+
+### 3.2 Abandonment and regrowth
+
+Abandonment includes:
+
+```text
+c → s
+p → s
+```
+
+The source biomass and slow-soil state are inherited by secondary vegetation. The difference between the inherited state and the secondary-vegetation equilibrium state creates biomass and soil recovery trajectories.
+
+### 3.3 Cropland–pasture conversion
+
+Other agricultural transitions include:
+
+```text
+c → p
+p → c
+```
+
+These transitions retain the source carbon state and create departures from the target equilibrium state.
+
+### 3.4 Wood harvest
+
+Wood harvest is processed separately from ordinary state-to-state transitions.
+
+Supported LUH2 harvest families are:
+
+```text
+primf
+primn
+secmf
+secyf
+secnf
+```
+
+Primary harvest transfers affected area from primary vegetation to secondary vegetation. Secondary harvest remains within secondary vegetation but creates a new harvest-history biomass and soil departure.
+
+### 3.5 Urban land
+
+Urban land is retained in state accounting. Carbon-active transitions involving `U` are not yet implemented as a complete bookkeeping process.
+
+---
+
+## 4. Beginning-of-year transition accounting
+
+All ordinary transitions in one model year are evaluated against the same beginning-of-year land-cover and carbon state.
+
+For each source land-cover class:
+
+1. all requested outgoing transitions are summed;
+2. requested area is compared with beginning-of-year source area;
+3. if requested area exceeds available area, all outgoing transitions are scaled proportionally;
+4. individual transition effects are calculated from independent copies of the beginning-of-year state;
+5. all event increments are combined and applied simultaneously.
+
+This prevents reciprocal or multi-destination transitions from using area or carbon created earlier in the same annual loop.
+
+The associated diagnostics are:
+
+```text
+transition_requested_area
+transition_applied_area
+transition_clipped_area
+```
+
+---
+
+## 5. Land-use input formats
+
+The `main` branch supports two input formats selected in the run YAML.
+
+```yaml
+run:
+  input_format: original_luh2
+```
+
+or:
+
+```yaml
+run:
+  input_format: vscp
+```
+
+### 5.1 Original LUH2 input
+
+For `original_luh2`, the state file contains the original LUH2 classes configured under `LUH2toLULC`.
+
+Typical state variables are:
+
+```text
+primf
+primn
+secdf
+secdn
+urban
+c3ann
+c4ann
+c3per
+c4per
+c3nfx
+pastr
+range
+```
+
+Transition variables are detected from variables named:
+
+```text
+<src>_to_<dst>
+```
+
+or:
 
 ```text
 <src>_to_<dst>_frac
 ```
 
-Examples:
+Only variables that exist in the transition file and map to different internal land-cover classes are loaded and evaluated.
+
+### 5.2 Pre-aggregated VSCP input
+
+For `vscp`, the state file is read directly from:
+
+```text
+v
+s
+p
+c
+U
+```
+
+The required active state variables are:
+
+```text
+v
+s
+p
+c
+```
+
+`U` is optional.
+
+Transition variables are named:
+
+```text
+<src>_to_<dst>_frac
+```
+
+Examples include:
 
 ```text
 v_to_c_frac
@@ -128,43 +310,37 @@ c_to_p_frac
 p_to_c_frac
 ```
 
-Same-class channels such as `v_to_v_frac` or `s_to_s_frac` may be retained for transition-matrix checks, but they are not treated as LULCC events by the simulator.
-
-The aggregated transition file must still retain the original LUH2 wood-harvest variables:
-
-```text
-primf_harv     primf_bioh
-primn_harv     primn_bioh
-secmf_harv     secmf_bioh
-secyf_harv     secyf_bioh
-secnf_harv     secnf_bioh
-```
-
-Ordinary land-use transitions are therefore read as `v/s/c/p/U`, while wood harvest continues to use the original LUH2 harvest families.
+A VSCP transition file must retain the original LUH2 harvest variables when wood harvest is simulated.
 
 ---
 
-## 3. Harvest experiment configurations
+## 6. Wood-harvest experiments
 
-Three harvest experiments are available.
+Three experiment configurations are provided.
 
-| Experiment alias | Configuration file | Harvest forcing | Area treatment |
+| Configuration file | Mode | Demand source | Area behavior |
 |---|---|---|---|
-| `area` | `config/experiments/harvest_area.yml` | LUH2 `*_harv` area | Strictly limited to the LUH2 harvest footprint |
-| `bio-strict` | `config/experiments/harvest_bio_strict.yml` | LUH2 `*_bioh` biomass demand | Demand can only be met within the LUH2 harvest footprint |
-| `bio-forced` | `config/experiments/harvest_bio_forced.yml` | LUH2 `*_bioh` biomass demand | Harvest may expand beyond the LUH2 footprint within the same source cover and allowed PFT group |
+| `config/experiments/harvest_area.yml` | Area driven | LUH2 `*_harv` | Limited to the reported harvest footprint |
+| `config/experiments/harvest_bio_strict.yml` | Biomass demand | LUH2 `*_bioh` | Demand can only be met within the reported footprint |
+| `config/experiments/harvest_bio_forced.yml` | Biomass demand | LUH2 `*_bioh` | Additional source area may be used when the footprint is insufficient |
 
-### 3.1 Area-driven harvest
+The experiment is selected in the run YAML:
 
-The area-driven experiment uses LUH2 `*_harv` variables.
-
-```text
-removed biomass
-= current modeled biomass on the source cover
-× harvested share of the source-cover area
+```yaml
+experiment:
+  path: config/experiments/harvest_area.yml
 ```
 
-Expected diagnostic identities:
+### 6.1 Area-driven harvest
+
+Area-driven harvest uses the LUH2 harvested-area fraction.
+
+```text
+requested biomass
+= current modeled biomass within the effective harvested area
+```
+
+Expected relationships are:
 
 ```text
 harvest_requested_biomass = harvest_met_biomass
@@ -174,9 +350,9 @@ harvest_unmet_biomass     = 0
 harvest_extra_area        = 0
 ```
 
-### 3.2 Strict-area biomass-demand harvest
+### 6.2 Strict biomass-demand harvest
 
-The strict biomass-demand experiment uses LUH2 `*_bioh` as the requested biomass removal. Harvest is limited to the LUH2 `*_harv` footprint.
+The requested biomass is read from `*_bioh`. Removal is restricted to biomass available within the LUH2 harvest footprint.
 
 ```text
 requested biomass = met biomass + unmet biomass
@@ -185,21 +361,24 @@ forced biomass    = 0
 extra area        = 0
 ```
 
-Unmet demand is reported but is not added to product or rapid-soil pools.
+Unmet biomass is reported but is not added to product or soil pools.
 
-### 3.3 Biomass-demand harvest with area expansion
+### 6.3 Biomass-demand harvest with area expansion
 
-The forced biomass-demand experiment first uses biomass within the LUH2 harvest footprint. If this is insufficient, harvest may expand within the same source cover, harvest family, and allowed PFT group.
+The model first uses biomass within the LUH2 harvest footprint. Remaining demand may be met from additional area within the same source-cover and forest/non-forest PFT group.
 
 ```text
 requested biomass
-= met biomass + forced biomass + unmet biomass
+= met biomass
++ forced biomass
++ unmet biomass
 
 removed biomass
-= met biomass + forced biomass
+= met biomass
++ forced biomass
 ```
 
-Additional removal outside the LUH2 footprint is reported as:
+Additional removal is reported through:
 
 ```text
 harvest_forced_biomass
@@ -208,178 +387,125 @@ harvest_extra_area
 
 ---
 
-## 4. Main model modules
+## 7. PFT maps
 
-| File | Main role |
-|---|---|
-| `src/main.py` | Local command-line entry point; resolves experiment configuration and local input/output paths |
-| `src/LULCCSimulator.py` | Controls data parsing, initialization, annual simulation, diagnostics, and NetCDF writing |
-| `src/events.py` | Implements clearing, abandonment, and cropland–pasture transition events |
-| `src/harvest.py` | Implements area-driven and biomass-demand harvest schemes |
-| `src/transition.py` | Applies annual pool relaxation, decay, regrowth, and process-level flux accounting |
-| `src/file_loader.py` | Loads and aligns land-use and PFT input files |
-| `src/parameter_loader.py` | Reads the base configuration, overlays experiment configuration, and loads optional transient carbon-density data |
-| `src/carbon_pools_init.py` | Defines model indices and initializes equilibrium and legacy carbon pools |
-| `src/summary_yearly.py` | Summarizes annual stocks and atmospheric carbon |
-| `server/main_1deg.py` | Runs one 1° longitude band |
-| `server/main_025deg.py` | Runs one 0.25° longitude band |
-| `server/run_single_band.sbatch` | Selects resolution and experiment, then launches a SLURM array task |
-| `server/clean_run.sh` | Removes selected model outputs and logs |
+PFT names and the PFT count are determined from the parameter configuration.
 
-The main call sequence is:
+The preferred explicit form is:
+
+```yaml
+pft:
+  names:
+    - PFT1
+    - PFT2
+    - PFT3
+  forest_indices: [1, 2]
+```
+
+When the explicit `pft` section is absent, the model infers ordered `PFT<number>` entries from `carbon_density` and reads the legacy `forest_pft_indices` field.
+
+The PFT map can be:
 
 ```text
-local:  src.main
-server: server.main_1deg or server.main_025deg
-  ↓
-resolve experiment YAML
-  ↓
-LULCCSimulator
-  ↓
-ParameterLoader
-  ├── config/config.yml
-  └── config/experiments/<experiment>.yml
-  ↓
-FileLoader
-  ├── states
-  ├── transitions
-  └── PFT map
-  ↓
-initialize C_bar, Delta, and frac_area
-  ↓
-annual simulation
-  ├── clearing
-  ├── abandonment
-  ├── cropland–pasture conversion
-  ├── wood harvest
-  ├── pool relaxation and decay
-  └── annual summary
-  ↓
-NetCDF output
+lat × lon
 ```
+
+Static dominant PFT codes.
+
+```text
+pft × lat × lon
+```
+
+Static fractional PFT composition.
+
+```text
+time × lat × lon
+```
+
+Dynamic dominant PFT codes.
+
+```text
+time × pft × lat × lon
+```
+
+Dynamic fractional PFT composition.
+
+Dimension order is detected from dimension names.
+
+### 7.1 Static PFT
+
+A static PFT map is used for the complete simulation.
+
+### 7.2 Dynamic PFT
+
+Dynamic PFT behavior is controlled in the run YAML.
+
+```yaml
+pft:
+  base_year: 850
+  time_encoding: auto
+  update_mode: annual_conservative
+  min_year_policy: clip
+  max_year_policy: clip
+```
+
+Available update modes are:
+
+```text
+fixed_initial
+```
+
+Use the PFT composition from the simulation start year for all years.
+
+```text
+annual_conservative
+```
+
+Update PFT composition annually while conserving total ecosystem carbon during remapping. Biomass and slow-soil equilibrium stocks are recalculated, and the corresponding mismatch is retained in the general legacy pool.
+
+`PFT_Remap_Adjustment` reports numerical carbon change during remapping and should remain close to zero.
+
+A PFT map finer than the model grid must be area-weighted to the model resolution before simulation. The loader does not silently aggregate a finer PFT map.
 
 ---
 
-## 5. Internal land-cover classes and events
-
-The model uses five internal categories.
-
-| Internal code | Meaning |
-|---|---|
-| `v` | Primary vegetation |
-| `s` | Secondary vegetation |
-| `p` | Pasture and rangeland |
-| `c` | Cropland |
-| `U` | Urban land |
-
-The internal carbon-array order is:
-
-```text
-v, s, p, c, U
-```
-
-Input variables should always be matched by name rather than by their order in a NetCDF file.
-
-### Clearing
-
-```text
-v → c
-v → p
-s → c
-s → p
-```
-
-Clearing transfers carbon among direct atmospheric release, product pools, rapid soil/slash, slow soil, and biomass-deficit pools.
-
-### Abandonment and regrowth
-
-```text
-c → s
-p → s
-```
-
-These transitions inherit the source carbon state into secondary vegetation and generate biomass and soil recovery trajectories.
-
-### Wood harvest
-
-Wood harvest is processed separately from ordinary state-to-state transitions using:
-
-```text
-primf
-primn
-secmf
-secyf
-secnf
-```
-
-Primary harvest is represented as a transfer from primary to secondary vegetation. Secondary harvest remains within secondary vegetation but creates a new harvest-history carbon deficit.
-
-### Other transitions
-
-```text
-c → p
-p → c
-```
-
-Urban land is retained for land-cover accounting, but `U`-related transitions are not yet implemented as a complete active bookkeeping process.
-
----
-
-## 6. Carbon pools
-
-The equilibrium carbon array stores:
-
-```text
-B   biomass carbon
-SS  slow soil carbon
-```
-
-The legacy or excess carbon array stores:
-
-```text
-B     biomass departure from equilibrium
-SS    slow-soil departure from equilibrium
-SR    rapid soil/slash carbon
-P1    1-year product pool
-P10   10-year product pool
-P100  100-year product pool
-A     direct atmospheric release
-```
-
-Historical departures are tracked separately for:
-
-```text
-l  clearing
-h  harvest
-a  abandonment
-g  other transitions
-```
-
-This allows past land-use events to continue affecting present-day fluxes.
-
----
-
-## 7. PFT and carbon-density configuration
-
-The current model uses 15 PFT classes. PFT-dependent parameters are stored in `config/config.yml`.
-
-The PFT input may be:
-
-- a 15-class PFT fraction map; or
-- a dominant-PFT map converted to the expected grid and class convention.
-
-States, transitions, and the PFT map must use mutually consistent:
-
-- spatial resolution;
-- grid-cell centers;
-- latitude orientation;
-- longitude convention;
-- land mask;
-- PFT numbering.
-
-### Static and transient carbon density
+## 8. Carbon density
 
 The model supports static and transient PFT-dependent biomass and soil carbon densities.
+
+### 8.1 Static carbon density
+
+Static densities are read from:
+
+```text
+config/config.yml
+```
+
+Each PFT contains biomass and soil density for:
+
+```text
+v
+s
+p
+c
+```
+
+With:
+
+```text
+area_unit = ha
+carbon density = t C ha^-1
+```
+
+grid-cell carbon stocks and annual carbon fluxes are stored in:
+
+```text
+t C
+```
+
+### 8.2 Transient carbon density
+
+Transient density is controlled by the effective parameter configuration.
 
 ```yaml
 dynamic_carbon_density:
@@ -390,98 +516,301 @@ dynamic_carbon_density:
   max_year_policy: clip
 ```
 
-Set:
+The run YAML can override the base parameter file:
 
 ```yaml
-dynamic_carbon_density:
-  enabled: false
+model_overrides:
+  dynamic_carbon_density:
+    enabled: false
 ```
 
-to use the static carbon densities stored directly in `config/config.yml`.
+Configuration precedence is:
 
-When transient carbon density is enabled, the Parquet file must contain year- and PFT-specific biomass and soil carbon densities consistent with the model configuration.
+```text
+config/config.yml
+  ↓
+experiment YAML
+  ↓
+model_overrides in the run YAML
+```
+
+The current transient-density implementation refreshes equilibrium biomass and soil carbon for the existing land-cover-by-PFT area each year.
+
+The resulting external stock adjustment is reported as:
+
+```text
+Carbon_Density_Adjustment
+```
+
+This adjustment is excluded from `Closure_Error` and is not included in `Net_Emissions`.
 
 ---
 
-## 8. Required input data and server layout
+## 9. Time configuration
 
-The server project layout is:
+Simulation dates are expressed as calendar years.
 
-```text
-/mnt/beegfs/product/lulc0120/
-├── Code/                    # Git repository
-├── In_ncfile/               # all input files are stored directly here
-├── Out_ncfile/
-├── logs/
-└── site-packages/
+```yaml
+run:
+  input_base_year: 850
+  start_year: 850
+  end_year: 2020
+
+inputs:
+  time_encoding: index
 ```
 
-There are no secondary input-data directories under `In_ncfile`. Original LUH2 inputs, aggregated VSCP inputs, PFT maps, and files at different resolutions may coexist in the same directory.
+For an index-based LUH2 time axis:
+
+```text
+input index 0    → calendar year 850
+input index 1170 → calendar year 2020
+```
+
+The number of annual transitions is:
+
+```text
+end_year - start_year
+```
+
+The number of stored annual states is:
+
+```text
+end_year - start_year + 1
+```
+
+The transition file must contain every annual transition year from `start_year` through `end_year - 1`.
+
+Supported time encodings are:
+
+```text
+index
+calendar_year
+auto
+```
+
+---
+
+## 10. Run configuration
+
+A complete simulation is defined by a run YAML.
+
+Current server configurations are:
+
+```text
+config/run_025deg.yml
+config/run_1deg.yml
+```
+
+A run configuration contains:
+
+```text
+run             simulation identity, resolution, input format and years
+paths           input and output directories
+inputs          state, transition and PFT files
+parameters      base parameter file
+experiment      harvest experiment file
+model_overrides run-specific parameter switches
+pft             PFT time handling and update mode
+validation      input validation settings
+output          output prefix, compression and synchronization
+server          longitude-band width and start staggering
+```
 
 Example:
 
-```text
-/mnt/beegfs/product/lulc0120/In_ncfile/
-├── states.nc
-├── transitions.nc
-├── states_1deg.nc
-├── transitions_1deg.nc
-├── states_vscp.nc
-├── transitions_vscp.nc
-├── states_vscp_1deg.nc
-├── transitions_vscp_1deg.nc
-├── IBIS_PFT_dominant_0.25deg.nc
-└── IBIS_PFT_dominant_1deg.nc
+```yaml
+run:
+  name: baseline_1deg_area
+  resolution: 1deg
+  input_format: original_luh2
+  input_base_year: 850
+  start_year: 850
+  end_year: 2020
+  area_unit: ha
+
+paths:
+  data_dir: ../In_ncfile
+  output_dir: ../Out_ncfile
+
+inputs:
+  states: states_1deg.nc
+  transitions: transitions_1deg.nc
+  pft: IBIS_PFT_dominant_1deg.nc
+  pft_variable: null
+  time_encoding: index
+
+parameters:
+  path: config/config.yml
+
+experiment:
+  path: config/experiments/harvest_area.yml
+
+model_overrides:
+  dynamic_carbon_density:
+    enabled: false
+
+pft:
+  base_year: 850
+  time_encoding: auto
+  update_mode: annual_conservative
+  min_year_policy: clip
+  max_year_policy: clip
+
+validation:
+  run_before_simulation: false
+  full_scan: true
+
+output:
+  filename_prefix: summary_1deg
+  compression_level: 4
+  sync_every: 200
+
+server:
+  band_size_deg: 10
+  stagger_max: 0
 ```
 
-Relative input filenames supplied to the server runners are resolved directly under:
-
-```text
-/mnt/beegfs/product/lulc0120/In_ncfile/
-```
-
-Current server defaults are:
-
-| Resolution | State file | Transition file | PFT file |
-|---|---|---|---|
-| 1° | `states_1deg.nc` | `transitions_1deg.nc` | `IBIS_PFT_dominant_1deg.nc` |
-| 0.25° | `states.nc` | `transitions.nc` | `IBIS_PFT_dominant_0.25deg.nc` |
-
-The active input files must match the current code branch:
-
-| Branch | Required state/transition content |
-|---|---|
-| `main` | Original LUH2 variables |
-| `vscp` | Aggregated `v/s/c/p/U` variables |
-
-When the actual filenames differ from the defaults, `server.main_1deg` and `server.main_025deg` accept:
-
-```text
---state-file
---transition-file
---pft-file
-```
-
-The current `run_single_band.sbatch` wrapper forwards the experiment alias but does not forward custom input filenames. Therefore, SLURM array runs use the default filenames defined in the selected server runner unless those defaults are changed in that branch.
-
-Local input and output directories are excluded from Git through `.gitignore`.
+Use a unique `run.name` whenever any input, experiment, model switch or parameter file changes. Completed outputs are skipped when their dimensions and `done` flags are complete.
 
 ---
 
-## 9. Installation
+## 11. Input validation
 
-Python 3.8 or later is recommended.
+The validator can check:
 
-### Local environment
+- required state variables;
+- required transition and harvest variables;
+- simulation-year coverage;
+- state and transition grid consistency;
+- negative or out-of-range fractions;
+- land-cover state sums;
+- PFT variable identification;
+- dominant-PFT integer codes;
+- fractional-PFT sums;
+- configured PFT count;
+- dynamic-PFT year coverage.
+
+### 11.1 Validation before simulation
+
+Enable automatic validation in a run YAML:
+
+```yaml
+validation:
+  run_before_simulation: true
+  full_scan: true
+```
+
+A validation report is written to:
+
+```text
+Out_ncfile/<resolution>/<run.name>/input_validation_report.json
+```
+
+The simulation stops when validation status is `FAIL`.
+
+### 11.2 Standalone validation
+
+Edit:
+
+```text
+tools/validate_inputs.py
+```
+
+and set:
+
+```python
+CONFIG_PATH = Path("config/run_025deg.yml")
+```
+
+Then run:
+
+```bash
+python -m tools.validate_inputs
+```
+
+Use `full_scan: false` for a faster structural check and `full_scan: true` for a complete data scan.
+
+---
+
+## 12. Repository structure
+
+```text
+Bookkeeping/
+├── README.md
+├── requirements.txt
+├── .gitignore
+│
+├── src/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── run_config.py
+│   ├── run_manager.py
+│   ├── input_validator.py
+│   ├── LULCCSimulator.py
+│   ├── file_loader.py
+│   ├── parameter_loader.py
+│   ├── carbon_pools_init.py
+│   ├── events.py
+│   ├── harvest.py
+│   ├── transition.py
+│   └── summary_yearly.py
+│
+├── config/
+│   ├── config.yml
+│   ├── dynamic_carbon_density.parquet
+│   ├── run_025deg.yml
+│   ├── run_1deg.yml
+│   └── experiments/
+│       ├── harvest_area.yml
+│       ├── harvest_bio_strict.yml
+│       └── harvest_bio_forced.yml
+│
+├── server/
+│   ├── __init__.py
+│   ├── main_025deg.py
+│   ├── main_1deg.py
+│   ├── run_single_band.sbatch
+│   └── clean_run.sh
+│
+├── tools/
+│   └── validate_inputs.py
+│
+└── docs/
+    ├── CHANGELOG.txt
+    └── ROADMAP.md
+```
+
+### Main modules
+
+| File | Role |
+|---|---|
+| `src/main.py` | Local entry point using `config/run_local.yml` |
+| `src/run_config.py` | Loads and resolves run YAML files |
+| `src/run_manager.py` | Shared local/server orchestration, output checks and manifests |
+| `src/input_validator.py` | One-time input and configuration validation |
+| `src/LULCCSimulator.py` | Annual bookkeeping simulation and NetCDF output |
+| `src/file_loader.py` | NetCDF slicing, time conversion, grid alignment and PFT loading |
+| `src/parameter_loader.py` | Base parameters, experiment overlays and dynamic density |
+| `src/carbon_pools_init.py` | Pool definitions and initialization |
+| `src/events.py` | Clearing, abandonment and cropland–pasture events |
+| `src/harvest.py` | Area- and biomass-driven harvest |
+| `src/transition.py` | Annual decay, regrowth and flux attribution |
+| `src/summary_yearly.py` | Annual carbon-stock summaries |
+| `server/main_025deg.py` | 0.25° server entry point |
+| `server/main_1deg.py` | 1° server entry point |
+| `server/run_single_band.sbatch` | SLURM longitude-band launcher |
+
+---
+
+## 13. Installation
+
+The current source code requires Python 3.10 or later.
+
+Create and activate a virtual environment:
 
 ```bash
 python -m venv .venv
-```
-
-Windows:
-
-```bash
-.venv\Scripts\activate
 ```
 
 Linux or macOS:
@@ -490,29 +819,19 @@ Linux or macOS:
 source .venv/bin/activate
 ```
 
-Install packages:
+Windows:
+
+```text
+.venv\Scripts\activate
+```
+
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Server-local packages
-
-The SLURM script adds the following directory to `PYTHONPATH`:
-
-```text
-/mnt/beegfs/product/lulc0120/site-packages
-```
-
-Packages can be installed there with:
-
-```bash
-python3 -m pip install \
-  --target /mnt/beegfs/product/lulc0120/site-packages \
-  -r requirements.txt
-```
-
-Required packages include:
+Main dependencies are:
 
 ```text
 numpy
@@ -526,102 +845,152 @@ pyarrow
 
 ---
 
-## 10. Running locally
+## 14. Input and output directories
 
-Run the model from the repository root using module mode.
+The default server layout is:
 
-### Area-driven experiment
-
-```bash
-python -m src.main --experiment area
+```text
+/mnt/beegfs/product/lulc0120/
+├── Code/          Git repository
+├── In_ncfile/     State, transition and PFT inputs
+├── Out_ncfile/    Model outputs
+├── logs/          SLURM logs
+└── site-packages/ Server-local Python packages
 ```
 
-### Strict-area biomass-demand experiment
+Relative filenames in a run YAML are resolved under `paths.data_dir`.
 
-```bash
-python -m src.main --experiment bio-strict
+Example:
+
+```text
+In_ncfile/
+├── states.nc
+├── transitions.nc
+├── states_1deg.nc
+├── transitions_1deg.nc
+├── states_vscp.nc
+├── transitions_vscp.nc
+├── states_vscp_1deg.nc
+├── transitions_vscp_1deg.nc
+├── IBIS_PFT_dominant_0.25deg.nc
+└── IBIS_PFT_dominant_1deg.nc
 ```
-
-### Biomass-demand experiment with area expansion
-
-```bash
-python -m src.main --experiment bio-forced
-```
-
-A custom experiment YAML can also be supplied:
-
-```bash
-python -m src.main \
-  --experiment config/experiments/harvest_bio_forced.yml
-```
-
-The local paths and simulation length are currently defined in `src/main.py`. Update them before running with a different resolution, input filename, simulation period, or output location.
 
 ---
 
-## 11. Running on the server
+## 15. Running locally
 
-Run all commands from:
+The local entry point reads:
+
+```text
+config/run_local.yml
+```
+
+Create the file from one of the server configurations:
+
+Linux or macOS:
+
+```bash
+cp config/run_1deg.yml config/run_local.yml
+```
+
+Windows:
+
+```text
+copy config\run_1deg.yml config\run_local.yml
+```
+
+Edit `config/run_local.yml`, especially:
+
+```text
+run.name
+run.resolution
+run.input_format
+run.start_year
+run.end_year
+paths.data_dir
+paths.output_dir
+inputs
+experiment.path
+model_overrides
+pft
+```
+
+Run from the repository root:
+
+```bash
+python -m src.main
+```
+
+The local output is:
+
+```text
+Out_ncfile/<resolution>/<run.name>/<output.filename_prefix>.global.nc
+```
+
+---
+
+## 16. Running on the server
+
+Edit the matching run configuration before submission:
+
+```text
+0.25° → config/run_025deg.yml
+1°    → config/run_1deg.yml
+```
+
+The SLURM script selects only the resolution. The harvest experiment and all model options are selected inside the run YAML.
+
+Run from:
 
 ```bash
 cd /mnt/beegfs/product/lulc0120/Code
 ```
 
-The SLURM wrapper selects the runner through:
+### 16.1 1° global simulation
 
-```text
-RESOLUTION=1deg   → python3 -m server.main_1deg
-RESOLUTION=025deg → python3 -m server.main_025deg
+With:
+
+```yaml
+server:
+  band_size_deg: 10
 ```
 
-The experiment is selected independently:
-
-```text
-EXPERIMENT=area
-EXPERIMENT=bio-strict
-EXPERIMENT=bio-forced
-```
-
-### 11.1 1° global run
-
-With the default `BAND_SIZE=10`, the globe is divided into 36 longitude bands:
-
-```text
-band IDs: 0–35
-```
+the globe is divided into 36 bands:
 
 ```bash
 sbatch \
   --array=0-35%25 \
-  --export=ALL,RESOLUTION=1deg,EXPERIMENT=area,BAND_SIZE=10,STAGGER_MAX=600 \
+  --export=ALL,RESOLUTION=1deg \
   server/run_single_band.sbatch
 ```
 
-Replace `EXPERIMENT=area` with `bio-strict` or `bio-forced` as needed.
+### 16.2 0.25° global simulation
 
-### 11.2 0.25° global run
+With:
 
-With the default `BAND_SIZE=3`, the globe is divided into 120 longitude bands:
-
-```text
-band IDs: 0–119
+```yaml
+server:
+  band_size_deg: 3
 ```
+
+the globe is divided into 120 bands:
 
 ```bash
 sbatch \
   --array=0-119%35 \
-  --export=ALL,RESOLUTION=025deg,EXPERIMENT=area,BAND_SIZE=3,STAGGER_MAX=600 \
+  --export=ALL,RESOLUTION=025deg \
   server/run_single_band.sbatch
 ```
 
-### 11.3 Single-band run
+### 16.3 Single-band test
 
 1° band 0:
 
 ```bash
 sbatch \
   --array=0-0 \
-  --export=ALL,RESOLUTION=1deg,EXPERIMENT=area,BAND_SIZE=10,STAGGER_MAX=0 \
+  --export=ALL,RESOLUTION=1deg \
   server/run_single_band.sbatch
 ```
 
@@ -630,143 +999,83 @@ sbatch \
 ```bash
 sbatch \
   --array=0-0 \
-  --export=ALL,RESOLUTION=025deg,EXPERIMENT=area,BAND_SIZE=3,STAGGER_MAX=0 \
+  --export=ALL,RESOLUTION=025deg \
   server/run_single_band.sbatch
 ```
 
-To rerun a specific band, set the array range to that band ID. For example:
+### 16.4 Rerunning a band
 
-```bash
-sbatch \
-  --array=100-100 \
-  --export=ALL,RESOLUTION=025deg,EXPERIMENT=area,BAND_SIZE=3,STAGGER_MAX=0 \
-  server/run_single_band.sbatch
-```
+An output is skipped when:
 
-### 11.4 Direct server test with explicit filenames
+- time, latitude and longitude dimensions match the current run;
+- the complete `done` array equals 1.
 
-The Python runner can be called directly when custom input filenames are needed:
+An incomplete output is removed and recomputed from the beginning.
 
-```bash
-BAND_ID=0 BAND_SIZE=10 STAGGER_MAX=0 \
-python3 -m server.main_1deg \
-  --experiment area \
-  --state-file states_vscp_1deg.nc \
-  --transition-file transitions_vscp_1deg.nc \
-  --pft-file IBIS_PFT_dominant_1deg.nc \
-  --start-year 850 \
-  --end-year 2020
-```
+To intentionally rerun a completed simulation:
 
-All three relative input filenames in this command are resolved under the same `In_ncfile` directory.
-
-### 11.5 Output locations
-
-1° outputs:
-
-```text
-/mnt/beegfs/product/lulc0120/Out_ncfile/
-└── 1deg/
-    └── <experiment_name>/
-        ├── summary_1deg.rank000.nc
-        ├── summary_1deg.rank001.nc
-        └── ...
-```
-
-0.25° outputs:
-
-```text
-/mnt/beegfs/product/lulc0120/Out_ncfile/
-└── 025deg/
-    └── <experiment_name>/
-        ├── summary_025deg.rank000.nc
-        ├── summary_025deg.rank001.nc
-        └── ...
-```
-
-Experiment directory names are read from the YAML files:
-
-```text
-harvest_area_driven
-harvest_bio_strict
-harvest_bio_forced
-```
-
-A band is skipped when its output has the expected dimensions and all `done` flags equal 1. An existing incomplete band file is removed and the complete band is run again.
-
-### 11.6 Logs
-
-SLURM output and error logs:
-
-```text
-/mnt/beegfs/product/lulc0120/logs/
-├── slurm_band_<jobID>_<taskID>.out
-└── slurm_band_<jobID>_<taskID>.err
-```
-
-Model logs:
-
-```text
-lulcc_<resolution>_<experiment>_<jobID>_<taskID>.log
-```
-
-### 11.7 Cleaning model outputs
-
-Remove one resolution/experiment combination:
-
-```bash
-bash server/clean_run.sh 1deg area
-bash server/clean_run.sh 025deg bio-strict
-bash server/clean_run.sh 025deg bio-forced
-```
-
-Remove all model outputs and logs:
-
-```bash
-bash server/clean_run.sh all
-```
-
-The cleanup script asks for confirmation before deletion and does not remove files from `In_ncfile`.
+- use a new `run.name`; or
+- remove the completed output file or run directory before submission.
 
 ---
 
-## 12. Simulation length and spatial bands
+## 17. Output structure
 
-`years` is the number of annual transitions simulated:
-
-```text
-number of stored states = years + 1
-```
-
-The server runners calculate:
+Outputs are stored under:
 
 ```text
-total_years = end_year - start_year
-expected_time = total_years + 1
+Out_ncfile/<resolution>/<run.name>/
 ```
 
-For example, a simulation from 850 through 2020 contains:
+### Local run
 
 ```text
-1170 annual transitions
-1171 stored states
+<output.filename_prefix>.global.nc
 ```
 
-`start_year_idx` is an index offset into the external forcing data. It is not added to the internal carbon-pool array length.
-
-The server model is divided into longitude bands. The number of bands is:
+### Server run
 
 ```text
-bands_total = 360 / BAND_SIZE
+<output.filename_prefix>.rank000.nc
+<output.filename_prefix>.rank001.nc
+...
 ```
 
-`BAND_SIZE` must divide 360 exactly.
+The run directory also contains:
+
+```text
+run_config.yml
+run_manifest.json
+input_validation_report.json   when validation is enabled
+```
+
+### 17.1 NetCDF global attributes
+
+The NetCDF file records:
+
+- run name;
+- resolution;
+- input format;
+- input and simulation years;
+- state, transition and PFT paths;
+- parameter and experiment paths;
+- PFT variable and source mode;
+- PFT update mode;
+- harvest mode;
+- dynamic-density status;
+- PFT names and count;
+- area and carbon units;
+- run-configuration hash;
+- parameter and experiment hashes;
+- Git commit;
+- full run YAML;
+- band ID and band size for server runs.
 
 ---
 
-## 13. Output variables and units
+## 18. Output variables
 
-### Carbon stocks
+### 18.1 Carbon stocks
 
 ```text
 biomass_total
@@ -775,31 +1084,37 @@ P1
 P10
 P100
 atmosphere
+system_carbon_total
 ```
 
-### GCB-style budget variables
+### 18.2 Carbon budget and closure
 
 ```text
 Gross_Sources
 Gross_Sinks
 Net_Emissions
 Closure_Error
+Atmosphere_Closure_Error
+Carbon_Density_Adjustment
+PFT_Remap_Adjustment
 ```
 
-Sign convention:
+Definitions:
 
 ```text
-positive = atmospheric source
-negative = atmospheric sink
+Closure_Error
+= annual change in system_carbon_total
+- Carbon_Density_Adjustment
+- PFT_Remap_Adjustment
 ```
-
-The model uses:
 
 ```text
-Net_Emissions = Gross_Sources + Gross_Sinks
+Atmosphere_Closure_Error
+= Net_Emissions
+- annual atmosphere-pool increment
 ```
 
-### LUCE-style process categories
+### 18.3 LUCE-style categories
 
 ```text
 Flux_FD
@@ -810,7 +1125,7 @@ Flux_CAL
 Flux_WHp
 ```
 
-### Event-level fluxes
+### 18.4 Event-level fluxes
 
 ```text
 Flux_Clearing
@@ -822,39 +1137,57 @@ Flux_Other
 Flux_Products_Total
 ```
 
-### Harvest demand and removal
+The model is designed so that:
+
+```text
+Flux_Clearing
++ Flux_Abandonment
++ Flux_Harvest_Net
++ Flux_Other
+= Net_Emissions
+```
+
+within numerical precision.
+
+### 18.5 Transition-area diagnostics
+
+```text
+transition_requested_area
+transition_applied_area
+transition_clipped_area
+area_clearing
+area_abandonment
+area_other
+area_harvest
+area_deforestation
+```
+
+### 18.6 Harvest diagnostics
 
 ```text
 harvest_requested_biomass
 harvest_met_biomass
-harvest_forced_biomass
 harvest_unmet_biomass
 harvest_unmet_raw_biomass
-harvest_biomass_removed
-harvest_loss_biomass
-harvest_patch_biomass_before
-```
+harvest_forced_biomass
 
-### Harvest area
-
-```text
 harvest_luh2_area_frac
 harvest_luh2_area
 harvest_effective_area_frac
 harvest_effective_area
 harvest_extra_area
-area_harvest
-```
 
-### Harvest allocation and equation diagnostics
+harvest_biomass_removed
+harvest_patch_biomass_before
+harvest_loss_biomass
 
-```text
 harvest_to_products
 harvest_to_soil
 harvest_to_SR_from_biomass
 harvest_to_SR_from_soil
 harvest_forced_to_products
 harvest_forced_to_soil
+
 harvest_beta_delta_sum
 harvest_sigma_delta_sum
 harvest_delta_B_h
@@ -862,7 +1195,11 @@ harvest_delta_SS_h
 harvest_R
 ```
 
-Variables that are not applicable to the selected experiment are retained as zero so that the output schema remains consistent across experiments.
+Variables that do not apply to the selected experiment are retained as zero to preserve a consistent output schema.
+
+---
+
+## 19. Units
 
 When:
 
@@ -871,13 +1208,25 @@ area_unit = ha
 carbon density = t C ha^-1
 ```
 
-grid-cell carbon stocks and annual fluxes are stored in:
+carbon stocks and fluxes are:
 
 ```text
 t C
 ```
 
-Common conversions:
+Area variables are:
+
+```text
+ha
+```
+
+Fraction variables are:
+
+```text
+1
+```
+
+Common conversions are:
 
 ```text
 Tg C = t C / 1e6
@@ -888,25 +1237,41 @@ For area-normalized maps:
 
 ```text
 g C m^-2 yr^-1
-= total flux in t C yr^-1 × 1e6 / grid-cell area in m²
+= grid-cell flux in t C yr^-1 × 1e6
+  / grid-cell area in m²
 ```
 
 ---
 
-## 14. Known cautions
+## 20. Model cautions
 
-- The code branch and the land-use input format must be consistent.
-- The `main` branch expects original LUH2 state and transition variables.
-- The `vscp` branch expects pre-aggregated `v/s/c/p/U` variables.
-- Aggregated transition files must retain the original LUH2 `*_harv` and `*_bioh` variables.
-- Carbon-density assumptions strongly affect the magnitude of LULCC emissions.
-- Static and transient carbon-density simulations should be clearly distinguished.
-- LUH2 `*_harv` and `*_bioh` represent different constraints and should not be treated as interchangeable.
-- Harvest biomass must not be added to product or soil pools unless it has been removed from the modeled ecosystem stock.
-- PFT and land-use grid misalignment can create large spatial artifacts.
-- A reversed latitude axis can invert the spatial result.
-- Short simulations omit legacy emissions and sinks from earlier land-use events.
-- Product pools, soil pools, and regrowth trajectories require an adequate initialization period.
-- Urban land is not yet implemented as a complete active transition class.
-- Gross source and sink diagnostics are internal bookkeeping outputs and are not always directly comparable with published process-level net components.
-- The `done` variable records completion. The current server runner restarts an incomplete band from the beginning rather than continuing within the same band.
+- The land-use input format in the run YAML must match the actual NetCDF variables.
+- The PFT map and parameter file must use the same PFT count and class order.
+- Forest PFT indices determine forest/non-forest harvest allocation and LUCE process attribution.
+- Original LUH2 and VSCP transition files must retain required harvest variables.
+- Subsequent land-cover fractions are driven by transitions; the states file is used to initialize the selected start year.
+- Dynamic carbon density introduces an external stock adjustment and should be interpreted separately from `Net_Emissions`.
+- Dynamic PFT remapping changes equilibrium composition but is designed to conserve ecosystem carbon at the remapping step.
+- Urban transitions are not yet a complete carbon-active process.
+- A short simulation omits legacy emissions and sinks generated before the selected start year.
+- Use a new `run.name` for every distinct set of inputs, parameters or model options.
+- A complete band is not resumed grid by grid after interruption; incomplete output is recomputed from the beginning.
+- Input validation should be run after replacing land-use, PFT or carbon-density data.
+
+---
+
+## 21. Recommended workflow
+
+```text
+1. Prepare states, transitions and PFT inputs.
+2. Select original_luh2 or vscp input format.
+3. Select a harvest experiment YAML.
+4. Create or edit the run YAML.
+5. Assign a unique run.name.
+6. Validate the inputs.
+7. Run a one-band test.
+8. Inspect Closure_Error, transition_clipped_area and harvest diagnostics.
+9. Submit all longitude bands.
+10. Check all done variables before merging outputs.
+```
+
