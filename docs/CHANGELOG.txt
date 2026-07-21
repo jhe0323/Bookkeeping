@@ -1,3 +1,21 @@
+2026.7.21
+1. 将原始 LUH2 和预聚合 VSCP 输入统一到 main 分支，通过 run YAML 的 input_format 切换，不再维护独立 vscp 分支。
+2. 本地与服务器运行统一采用 calendar year；input_base_year 和 time_encoding 用于将 LUH2 0–1170 索引映射为 850–2020。
+3. 新增 config/run_local.yml、run_025deg.yml、run_1deg.yml；输入文件、年份、实验、PFT、动态碳密度和输出设置均由配置文件管理。
+4. 新增一次性输入验证模块，检查变量、时间范围、坐标、比例范围、states 总和、harvest 和 PFT 维度。
+5. Closure_Error 改为系统总碳闭合误差；保留 Atmosphere_Closure_Error 作为旧的大气池闭合诊断。
+6. 动态碳密度保持原有 C_bar 刷新定义，新增 Carbon_Density_Adjustment 外部库存调整诊断。
+7. 同一年多个土地转移以年初源面积为约束，超出可用面积时按比例缩放；新增 requested/applied/clipped area 诊断。
+8. 同时支持静态/动态 dominant PFT 和静态/动态 fractional PFT；动态 PFT 可采用 annual_conservative 守恒重映射。
+9. PFT 名称、数量和森林 PFT 由 config 决定；Python 文件不再固定 N_PFT=15。
+10. transition 通道在启动时根据 NetCDF 实际变量预编译，不再逐网格逐年遍历 12×12 组合。
+11. C_bar 和 Delta 改为滚动单状态数组，避免每个网格分配完整 1171 年内部状态。
+12. states 仅加载模拟起始年和当前空间切片，NetCDF 在读取完成后立即关闭；transitions 仅加载指定年份和实际需要变量。
+13. 保留 server/main_025deg.py 与 server/main_1deg.py 两个独立入口，内部共享 run_manager。
+14. 输出 NetCDF 增加完整 global attributes，并在输出目录保存 run_config.yml 和 run_manifest.json。
+15. README 同步更新为单 main 分支、配置驱动和新诊断体系。
+
+
 2026.7.18
 改变netcdf输出写入逻辑，每个网格先计算所有年份，后写入数据。计算速度x2。
 

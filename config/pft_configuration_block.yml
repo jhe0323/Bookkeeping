@@ -1,0 +1,20 @@
+# Optional explicit block to add near the top of config/config.yml.
+# The revised ParameterLoader can also infer these names from carbon_density.
+pft:
+  names:
+    - PFT1
+    - PFT2
+    - PFT3
+    - PFT4
+    - PFT5
+    - PFT6
+    - PFT7
+    - PFT8
+    - PFT9
+    - PFT10
+    - PFT11
+    - PFT12
+    - PFT13
+    - PFT14
+    - PFT15
+  forest_indices: [1, 2, 3, 4, 5, 6, 7, 8]

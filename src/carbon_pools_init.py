@@ -1,31 +1,19 @@
-from typing import Dict, Optional
-from src.parameter_loader import ParameterLoader
+"""Carbon-pool array definitions and initialization helpers."""
+from __future__ import annotations
+
+from typing import Optional
 import numpy as np
 
-# pool types (i): vegetation biomass (B), 
-# soil carbon undergoing slow relaxation processes (SS) or rapid relaxation processes (SR),
-# atmospheric carbon / cumulative emissions (A), and product pools in which products 
-# decompose on an average time scale of 1 year (P1), 10 years (P10), or 100 years (P100)
-pool_index = {"B":0, "SS":1, "SR":2, "P1":3, "P10":4, "P100":5, "A":6} 
-# Pools used by equilibrium carbon C_bar[i, j, l]
+pool_index = {"B": 0, "SS": 1, "SR": 2, "P1": 3, "P10": 4, "P100": 5, "A": 6}
 pool_index_Cbar = {"B": 0, "SS": 1}
-# Pools tracked in Delta[i, j, k, l]
-pool_index_Delta = {"B": 0, "SS": 1, "SR": 2, "P1": 3, "P10": 4, "P100": 5, "A": 6}
-# Pools that can actively change during event bookkeeping steps
+pool_index_Delta = dict(pool_index)
 pool_index_active = {"B": 0, "SS": 1, "SR": 2}
-# Pools used when computing total released carbon during transitions
 pool_index_release = {"B": 0, "SS": 1}
-# land cover types (j): primary / virgin land (v), secondary land (s), pasture (p), and crop (c). 
-# U for urban, currently not supported
-cover_index = {"v":0, "s":1, "p":2, "c":3, "U":4}
+
+cover_index = {"v": 0, "s": 1, "p": 2, "c": 3, "U": 4}
 LULC_keys = list(cover_index.keys())
-# history types (k): after clearing (clearing, l), harvest (harvest, h), 
-# abandonment (abandon, a), and without or after other transitions (others, g) 
-history_index = {"l":0, "h":1, "a":2, "g":3}
-# PFT index l: 15 natural PFTs, aligned with LUCE
-N_PFT = 15
-pft_index = {i + 1: i for i in range(N_PFT)}
-# Dimensions
+history_index = {"l": 0, "h": 1, "a": 2, "g": 3}
+
 N_POOL_CBAR = len(pool_index_Cbar)
 N_POOL_DELTA = len(pool_index_Delta)
 N_POOL_ACTIVE = len(pool_index_active)
@@ -34,239 +22,138 @@ N_COVER = len(cover_index)
 N_HISTORY = len(history_index)
 
 
-def normalize_pft_fractions(pft_grid) -> np.ndarray:
-    """Return a clean, normalized PFT-fraction vector for one grid cell.
-
-    The current model configuration uses ``N_PFT`` classes. Missing, negative
-    and non-finite values are set to zero. For backward compatibility, a cell
-    with no valid PFT information falls back to PFT 1.
-    """
+def normalize_pft_fractions(pft_grid, n_pft: int) -> np.ndarray:
     fractions = np.asarray(pft_grid, dtype=np.float64).reshape(-1).copy()
-    if fractions.size != N_PFT:
+    if fractions.size != int(n_pft):
         raise ValueError(
-            f"Expected {N_PFT} PFT fractions, got {fractions.size}. "
-            "The PFT map and parameter YAML must use the same class order."
+            f"Expected {n_pft} PFT fractions, got {fractions.size}. "
+            "The PFT map and parameter configuration must use the same order."
         )
-
     fractions[~np.isfinite(fractions)] = 0.0
     fractions[fractions < 0.0] = 0.0
     total = float(fractions.sum())
-    if total > 0.0:
-        fractions /= total
-    else:
-        fractions[:] = 0.0
-        fractions[0] = 1.0
+    if total <= 0.0:
+        raise ValueError("A simulated land cell has no valid PFT fraction.")
+    fractions /= total
     return fractions
 
+
 def resolve_n_time(*, n_time: Optional[int] = None, years: Optional[int] = None) -> int:
-    """
-    Resolve the size of the time dimension used by pool arrays.
-    Parameters
-    ----------
-    n_time : int, optional
-        Explicit number of stored model states. If provided, it is used directly.
-    years : int, optional
-        Number of simulated annual transitions. If ``n_time`` is not provided,
-        the stored states are assumed to include the initial condition plus one
-        state after each simulated year, i.e. ``years + 1``.
-    Returns
-    -------
-    int
-        Length of the time dimension.
-    Notes
-    -----
-    ``start_year_idx`` from main.py should *not* be included in ``n_time``.
-    It is only an index offset into the external forcing files. For model pool
-    storage, the correct length is usually ``years + 1``.
-    """
     if n_time is not None:
         if n_time <= 0:
             raise ValueError(f"n_time must be positive, got {n_time}.")
         return int(n_time)
-
     if years is not None:
         if years < 0:
             raise ValueError(f"years must be non-negative, got {years}.")
         return int(years) + 1
-
     raise ValueError("Either n_time or years must be provided.")
 
-# Initilize carbon pools (biomass and soil per LULC, and product, atmosphere)
+
 def initialize_Cbar(
-    initial_land_frac, 
-    cell_area, 
-    pft_grid, 
+    initial_land_frac,
+    cell_area,
+    pft_grid,
     params,
-    *, 
-    n_time=None, 
-    years=None
+    *,
+    n_time=None,
+    years=None,
 ) -> np.ndarray:
-    """
-    Initialize equilibrium carbon pools C_bar[t, i, j, l]
-    Returns: np.ndarray
-        Equilibrium carbon array with shape (n_time, N_POOL_CBAR, N_COVER, N_PFT).
-      Notes:
-      * i: B, SS
-      * j: v, s, p, c
-      * l: 1, 2, ..., 15
-      * At initialization, assume the system starts at equilibrium:
-          Cbar filled from initial areas and carbon densities.
-    """
     n_time_resolved = resolve_n_time(n_time=n_time, years=years)
-    pft_fractions = normalize_pft_fractions(pft_grid)
-    C_bar = np.zeros((n_time_resolved, N_POOL_CBAR, N_COVER, N_PFT), dtype=float)
+    n_pft = int(params.n_pft)
+    pft_fractions = normalize_pft_fractions(pft_grid, n_pft)
+    C_bar = np.zeros(
+        (n_time_resolved, N_POOL_CBAR, N_COVER, n_pft),
+        dtype=np.float64,
+    )
 
     for land, frac_land in initial_land_frac.items():
-        if land not in cover_index:
+        if land not in cover_index or frac_land <= 0:
             continue
         j = cover_index[land]
-        if frac_land <= 0:
-            continue
-        # The current code base keeps an optional urban class U for compatibility.
-        # Its densities can be handled separately if the parameter file supports it.
         if land == "U":
-            area = frac_land * cell_area
-            try:
-                rho_B = params.get_carbon_density(0, "Biomass", "U")
-                rho_S = params.get_carbon_density(0, "Soil", "U")
-            except:
-                rho_B = rho_S = 0.0
-
-            C_bar[0, 0, j, 0] = area * rho_B
-            C_bar[0, 1, j, 0] = area * rho_S
+            area = float(frac_land) * float(cell_area)
+            C_bar[0, 0, j, 0] = area * params.get_carbon_density(0, "Biomass", "U")
+            C_bar[0, 1, j, 0] = area * params.get_carbon_density(0, "Soil", "U")
             continue
 
         for p in np.flatnonzero(pft_fractions > 0.0):
-            frac_lp = frac_land * pft_fractions[p]
-            if frac_lp <= 0:
-                continue
-
-            area = frac_lp * cell_area
-
-            rho_B = params.get_carbon_density(p, "Biomass", land)
-            rho_S = params.get_carbon_density(p, "Soil", land)
-
-            C_bar[0, 0, j, p] = area * rho_B
-            C_bar[0, 1, j, p] = area * rho_S
-
+            area = float(frac_land) * pft_fractions[p] * float(cell_area)
+            C_bar[0, 0, j, p] = area * params.get_carbon_density(p, "Biomass", land)
+            C_bar[0, 1, j, p] = area * params.get_carbon_density(p, "Soil", land)
     return C_bar
-    
-def initialize_Delta(*, n_time: Optional[int] = None, years: Optional[int] = None) -> np.ndarray:
-    """
-    Initialize excess carbon pools Delta[t, i, j, k, l]
-    Returns: np.ndarray
-    Excess carbon array with shape (n_time, N_POOL_DELTA, N_COVER, N_HISTORY, N_PFT)
-    Notes:
-      * i: B, SS, SR, P1, P10, P100, A
-      * j: v, s, p, c
-      * k: l, h, a, g
-      * l: 1, 2, ..., 15
-    """
+
+
+def initialize_Delta(
+    *,
+    n_pft: int,
+    n_time: Optional[int] = None,
+    years: Optional[int] = None,
+) -> np.ndarray:
     n_time_resolved = resolve_n_time(n_time=n_time, years=years)
-    return np.zeros((n_time_resolved, N_POOL_DELTA, N_COVER, N_HISTORY, N_PFT), dtype=float)
+    return np.zeros(
+        (n_time_resolved, N_POOL_DELTA, N_COVER, N_HISTORY, int(n_pft)),
+        dtype=np.float64,
+    )
 
-def initialize_frac_area(initial_land_frac, pft_grid) -> np.ndarray:
-    """Initialize land-cover-by-PFT fractional area ``frac_area[j, p]``.
 
-    Each land-cover fraction is split by the normalized fractional PFT map:
-    ``frac_area[land, pft] = land_fraction * pft_fraction``.
-    """
-    pft_fractions = normalize_pft_fractions(pft_grid)
-    frac_area = np.zeros((N_COVER, N_PFT), dtype=float)
-
+def initialize_frac_area(initial_land_frac, pft_grid, *, n_pft: int) -> np.ndarray:
+    pft_fractions = normalize_pft_fractions(pft_grid, n_pft)
+    frac_area = np.zeros((N_COVER, int(n_pft)), dtype=np.float64)
     for land, frac_land in initial_land_frac.items():
         if land not in cover_index:
             continue
         frac_land = float(frac_land)
         if not np.isfinite(frac_land) or frac_land <= 0.0:
             continue
-
         j = cover_index[land]
         if land == "U":
-            # Urban is not PFT-resolved in the current parameterization.
             frac_area[j, 0] = frac_land
         else:
             frac_area[j, :] = frac_land * pft_fractions
-
     return frac_area
 
-def initialize_dC_bar(*, n_time: Optional[int] = None, years: Optional[int] = None) -> np.ndarray:
-    """
-    Initialize transition-time changes in equilibrium carbon dC_bar[t, i, j, l]
-    Returns: np.ndarray
-    Array with shape (n_time, N_POOL_CBAR, N_COVER, N_PFT)
-    Notes:
-      * i: B, SS
-      * j: v, s, p, c
-      * l: 1, 2, ..., 15
-    """
-    n_time_resolved = resolve_n_time(n_time=n_time, years=years)
-    return np.zeros((n_time_resolved, N_POOL_CBAR, N_COVER, N_PFT), dtype=float)
 
-def initialize_dDelta(*, n_time: Optional[int] = None, years: Optional[int] = None) -> np.ndarray:
-    """
-    Initialize per-event changes in active excess pools dDelta[t, i, j, k, l]
-    Returns: np.ndarray
-    Array with shape (n_time, N_POOL_ACTIVE, N_COVER, N_HISTORY, N_PFT)
-    Notes:
-      * i: B, SS
-      * j: v, s, p, c
-      * k: l, h, a, g
-      * l: 1, 2, ..., 15
-    """
-    n_time_resolved = resolve_n_time(n_time=n_time, years=years)
-    return np.zeros((n_time_resolved, N_POOL_ACTIVE, N_COVER, N_HISTORY, N_PFT), dtype=float)
+def initialize_dC_bar(*, n_pft: int, n_time=None, years=None) -> np.ndarray:
+    return np.zeros(
+        (resolve_n_time(n_time=n_time, years=years), N_POOL_CBAR, N_COVER, int(n_pft)),
+        dtype=np.float64,
+    )
 
-def initialize_dDelta_sum(*, n_time: Optional[int] = None, years: Optional[int] = None) -> np.ndarray:
-    """
-    Initialize history-summed excess-pool changes dDelta_sum[t, i, j, l]
-    Returns: np.ndarray
-    Array with shape (n_time, N_POOL_RELEASE, N_COVER, N_PFT)
-    Notes:
-      * i: B, SS
-      * j: v, s, p, c
-      * l: 1, 2, ..., 15
-    """
-    n_time_resolved = resolve_n_time(n_time=n_time, years=years)
-    return np.zeros((n_time_resolved, N_POOL_RELEASE, N_COVER, N_PFT), dtype=float)
 
-def initialize_dC_released(*, n_time: Optional[int] = None, years: Optional[int] = None) -> np.ndarray:
-    """
-    Initialize released-carbon bookkeeping array dC_released[t, i, j, l]
-    Returns: np.ndarray
-    Array with shape (n_time, N_POOL_RELEASE, N_COVER, N_PFT)
-    Notes:
-      * i: B, SS
-      * j: v, s, p, c
-      * l: 1, 2, ..., 15
-    """
-    n_time_resolved = resolve_n_time(n_time=n_time, years=years)
-    return np.zeros((n_time_resolved, N_POOL_RELEASE, N_COVER, N_PFT), dtype=float)
+def initialize_dDelta(*, n_pft: int, n_time=None, years=None) -> np.ndarray:
+    return np.zeros(
+        (resolve_n_time(n_time=n_time, years=years), N_POOL_ACTIVE, N_COVER, N_HISTORY, int(n_pft)),
+        dtype=np.float64,
+    )
 
-def refresh_Cbar_from_frac_area(
-    C_bar,
-    t_idx,
-    frac_area,
-    cell_area,
-    params,
-):
-    """
-    Rebuild equilibrium C_bar at one time step using current frac_area
-    and current-year carbon density from params.
-    """
+
+def initialize_dDelta_sum(*, n_pft: int, n_time=None, years=None) -> np.ndarray:
+    return np.zeros(
+        (resolve_n_time(n_time=n_time, years=years), N_POOL_RELEASE, N_COVER, int(n_pft)),
+        dtype=np.float64,
+    )
+
+
+def initialize_dC_released(*, n_pft: int, n_time=None, years=None) -> np.ndarray:
+    return np.zeros(
+        (resolve_n_time(n_time=n_time, years=years), N_POOL_RELEASE, N_COVER, int(n_pft)),
+        dtype=np.float64,
+    )
+
+
+def refresh_Cbar_from_frac_area(C_bar, t_idx, frac_area, cell_area, params) -> None:
     C_bar[t_idx, :, :, :] = 0.0
-
     for land, j in cover_index.items():
         if land == "U":
             continue
-
-        for p in range(N_PFT):
+        for p in range(int(params.n_pft)):
             area = float(frac_area[j, p]) * float(cell_area)
             if area <= 0.0:
                 continue
-
-            rho_B = params.get_carbon_density(p, "Biomass", land)
-            rho_S = params.get_carbon_density(p, "Soil", land)
-
-            C_bar[t_idx, pool_index_Cbar["B"], j, p] = area * rho_B
-            C_bar[t_idx, pool_index_Cbar["SS"], j, p] = area * rho_S
+            C_bar[t_idx, pool_index_Cbar["B"], j, p] = (
+                area * params.get_carbon_density(p, "Biomass", land)
+            )
+            C_bar[t_idx, pool_index_Cbar["SS"], j, p] = (
+                area * params.get_carbon_density(p, "Soil", land)
+            )

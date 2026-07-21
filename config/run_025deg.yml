@@ -1,0 +1,51 @@
+run:
+  name: baseline_025deg_area
+  resolution: 025deg
+  input_format: original_luh2   # original_luh2 or vscp
+  input_base_year: 850
+  start_year: 850
+  end_year: 2020
+  area_unit: ha
+
+paths:
+  data_dir: ../In_ncfile
+  output_dir: ../Out_ncfile
+
+inputs:
+  states: states.nc
+  transitions: transitions.nc
+  pft: IBIS_PFT_dominant_0.25deg.nc
+  pft_variable: null            # null = auto-detect
+  time_encoding: index          # input time 0..1170 -> calendar 850..2020
+
+parameters:
+  path: config/config.yml
+
+experiment:
+  path: config/experiments/harvest_area.yml
+
+# Run-specific parameter switches are merged after config.yml and experiment YAML.
+# Keeping them here ensures the exact simulation setup is copied into the output.
+model_overrides:
+  dynamic_carbon_density:
+    enabled: false
+
+pft:
+  base_year: 850
+  time_encoding: auto
+  update_mode: annual_conservative  # fixed_initial or annual_conservative
+  min_year_policy: clip
+  max_year_policy: clip
+
+validation:
+  run_before_simulation: false
+  full_scan: true
+
+output:
+  filename_prefix: summary_025deg
+  compression_level: 4
+  sync_every: 200
+
+server:
+  band_size_deg: 3
+  stagger_max: 0
