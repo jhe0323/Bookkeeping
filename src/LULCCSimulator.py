@@ -10,7 +10,7 @@ from collections import defaultdict
 import json
 import re
 import time
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import netCDF4 as nc
 import numpy as np
@@ -100,8 +100,8 @@ class LULCCSimulator:
         pft_update_mode: str = "annual_conservative",
         pft_min_year_policy: str = "clip",
         pft_max_year_policy: str = "clip",
-        lat_slice: slice | None = None,
-        lon_slice: slice | None = None,
+        lat_slice: Optional[slice] = None,
+        lon_slice: Optional[slice] = None,
         area_unit: str = "ha",
         run_metadata: Optional[dict] = None,
         parameter_overrides: Optional[dict] = None,
@@ -235,9 +235,9 @@ class LULCCSimulator:
         ):
             raise ValueError("States and transitions longitude grids differ.")
 
-    def _compile_state_channels(self, variable_names: Iterable[str]) -> list[tuple[str, str]]:
+    def _compile_state_channels(self, variable_names: Iterable[str]) -> List[Tuple[str, str]]:
         available = set(variable_names)
-        channels: list[tuple[str, str]] = []
+        channels: List[Tuple[str, str]] = []
         if self.input_format == "vscp":
             missing = [name for name in ("v", "s", "p", "c") if name not in available]
             if missing:
@@ -260,10 +260,10 @@ class LULCCSimulator:
     def _compile_transition_channels(
         self,
         variable_names: Iterable[str],
-    ) -> list[tuple[str, str, str]]:
+    ) -> List[Tuple[str, str, str]]:
         mapping = self.params.config.get("LUH2toLULC", {})
-        channels: list[tuple[str, str, str]] = []
-        seen: set[tuple[str, str, str]] = set()
+        channels: List[Tuple[str, str, str]] = []
+        seen: Set[Tuple[str, str, str]] = set()
         for name in variable_names:
             match = _TRANSITION_RE.match(str(name))
             if not match:
@@ -289,7 +289,7 @@ class LULCCSimulator:
             raise ValueError("No usable transition channels were found in the transition file.")
         return channels
 
-    def _compile_harvest_channels(self, variable_names: Iterable[str]) -> dict[str, tuple[str | None, str | None]]:
+    def _compile_harvest_channels(self, variable_names: Iterable[str]) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
         available = set(variable_names)
         channels = {}
         for family in _HARVEST_FAMILIES:
@@ -526,8 +526,8 @@ class LULCCSimulator:
         transitions: Dict[str, float],
         year_start_fraction: Dict[str, float],
         cell_area: float,
-    ) -> tuple[Dict[str, float], float, float, float]:
-        by_source: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    ) -> Tuple[Dict[str, float], float, float, float]:
+        by_source: Dict[str, List[Tuple[str, float]]] = defaultdict(list)
         requested_total = 0.0
         for key, fraction in transitions.items():
             src, _ = key.split("_to_", 1)
@@ -805,8 +805,8 @@ class LULCCSimulator:
         self,
         *,
         out_nc: str,
-        lat_slice: slice | None = None,
-        lon_slice: slice | None = None,
+        lat_slice: Optional[slice] = None,
+        lon_slice: Optional[slice] = None,
         sync_every: int = 200,
     ) -> None:
         started = time.time()

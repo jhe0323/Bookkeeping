@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
-from typing import Dict, Iterable
+from typing import Dict, Iterable, List, Optional, Union
 
 import netCDF4 as nc
 import numpy as np
@@ -74,7 +74,7 @@ def _variable_stats(variable, *, full_scan: bool, chunk_time: int = 16, chunk_la
     }
 
 
-def _pft_structure_stats(variable, *, pft_axis: int | None, full_scan: bool):
+def _pft_structure_stats(variable, *, pft_axis: Optional[int], full_scan: bool):
     shape = variable.shape
     dims = variable.dimensions
     time_axis = next((i for i, d in enumerate(dims) if d.lower() in {"time", "year", "time_counter"}), None)
@@ -124,7 +124,7 @@ def _pft_structure_stats(variable, *, pft_axis: int | None, full_scan: bool):
     }
 
 
-def _required_state_variables(cfg: ResolvedRunConfig, params: ParameterLoader) -> list[str]:
+def _required_state_variables(cfg: ResolvedRunConfig, params: ParameterLoader) -> List[str]:
     if cfg.input_format == "vscp":
         return ["v", "s", "p", "c"]
     return list((params.config.get("LUH2toLULC", {}) or {}).keys())
@@ -133,8 +133,8 @@ def _required_state_variables(cfg: ResolvedRunConfig, params: ParameterLoader) -
 def validate_inputs(
     config: ResolvedRunConfig,
     *,
-    report_path: str | Path | None = None,
-    full_scan: bool | None = None,
+    report_path: Optional[Union[str, Path]] = None,
+    full_scan: Optional[bool] = None,
 ) -> dict:
     full_scan = config.validation_full_scan if full_scan is None else bool(full_scan)
     loader = FileLoader()
@@ -389,7 +389,7 @@ def validate_inputs(
     return report
 
 
-def validate_run_config_file(path: str | Path) -> dict:
+def validate_run_config_file(path: Union[str, Path]) -> dict:
     config = load_run_config(path)
     output_dir = config.output_root / config.resolution / config.run_name
     return validate_inputs(

@@ -8,9 +8,9 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
-from typing import Any, Dict, Optional
-
 import os
+from typing import Any, Dict, Optional, Union
+
 import yaml
 
 
@@ -65,14 +65,18 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     return data
 
 
-def _resolve(repo_root: Path, value: str | Path) -> Path:
+def _resolve(repo_root: Path, value: Union[str, Path]) -> Path:
     path = Path(value)
     if not path.is_absolute():
         path = repo_root / path
     return path.resolve()
 
 
-def load_run_config(path: str | Path, *, expected_resolution: str | None = None) -> ResolvedRunConfig:
+def load_run_config(
+    path: Union[str, Path],
+    *,
+    expected_resolution: Optional[str] = None,
+) -> ResolvedRunConfig:
     config_path = Path(path).resolve()
     raw_text = config_path.read_text(encoding="utf-8")
     raw = _load_yaml(config_path)

@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -64,7 +64,7 @@ class ParameterLoader:
         self.validate_parameter_completeness()
 
     @staticmethod
-    def _resolve_path(path: str | Path) -> Path:
+    def _resolve_path(path: Union[str, Path]) -> Path:
         resolved = Path(path)
         if not resolved.is_absolute():
             resolved = Path.cwd() / resolved
@@ -104,7 +104,7 @@ class ParameterLoader:
             names = [str(name) for name in explicit_names]
         else:
             density = self.config.get("carbon_density", {}) or {}
-            numbered: list[tuple[int, str]] = []
+            numbered: List[Tuple[int, str]] = []
             for key in density:
                 match = _PFT_RE.match(str(key))
                 if match:
@@ -185,7 +185,7 @@ class ParameterLoader:
                 "Biomass-demand harvest must set demand_source.use_bioh=true."
             )
 
-    def get_forest_pfts(self) -> set[int]:
+    def get_forest_pfts(self) -> Set[int]:
         return set(self._forest_pfts)
 
     def get_carbon_density(self, p: int, pool_type: str, land_cover: str) -> float:
@@ -329,7 +329,7 @@ class ParameterLoader:
             "SOC_min_v", "SOC_min_s", "t_lapse", "f_v", "f_s",
         )
 
-        errors: list[str] = []
+        errors: List[str] = []
         for p, name in enumerate(self.pft_names):
             if not self.use_dynamic_density:
                 for pool, covers in required_density.items():

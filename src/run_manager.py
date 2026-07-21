@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Optional, Union
 import random
 import time
 
@@ -63,9 +64,9 @@ def _band_slice(config, band_id: int):
 
 
 def run_from_config(
-    config_path: str | Path,
+    config_path: Union[str, Path],
     *,
-    expected_resolution: str | None = None,
+    expected_resolution: Optional[str] = None,
     server_mode: bool = False,
 ) -> Path:
     config = load_run_config(config_path, expected_resolution=expected_resolution)
@@ -105,7 +106,7 @@ def run_from_config(
         lon_slice = None
         output_path = output_dir / f"{config.output_prefix}.global.nc"
         metadata["server_mode"] = 0
-    
+
     metadata["output_file"] = str(output_path)
 
     if server_mode:
@@ -135,7 +136,7 @@ def run_from_config(
             manifest_name="run_manifest.json",
             overwrite_manifest=True,
         )
-        
+
     state_info = FileLoader().inspect_dataset(config.state_path)
     expected_lat = len(state_info.lat) if lat_slice is None else lat_slice.stop - lat_slice.start
     expected_lon = len(state_info.lon) if lon_slice is None else lon_slice.stop - lon_slice.start

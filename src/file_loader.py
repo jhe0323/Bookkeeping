@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import netCDF4 as nc
 import numpy as np
@@ -26,8 +26,8 @@ class GridMeta:
 @dataclass
 class DatasetInfo:
     path: Path
-    variables: tuple[str, ...]
-    dimensions: dict[str, int]
+    variables: Tuple[str, ...]
+    dimensions: Dict[str, int]
     lat_name: str
     lon_name: str
     time_name: Optional[str]
@@ -224,7 +224,7 @@ def resolve_year_index(
 
 
 class FileLoader:
-    def inspect_dataset(self, path: str | Path) -> DatasetInfo:
+    def inspect_dataset(self, path: Union[str, Path]) -> DatasetInfo:
         resolved = Path(path).resolve()
         with nc.Dataset(resolved, "r") as ds:
             lat_name, lon_name = _guess_lat_lon_names(ds)
@@ -248,11 +248,11 @@ class FileLoader:
 
     def load_luh2_dataset(
         self,
-        path: str | Path,
+        path: Union[str, Path],
         *,
-        lat_slice: slice | None = None,
-        lon_slice: slice | None = None,
-        time_slice: slice | None = None,
+        lat_slice: Optional[slice] = None,
+        lon_slice: Optional[slice] = None,
+        time_slice: Optional[slice] = None,
         variable_names: Optional[Iterable[str]] = None,
     ) -> Tuple[_MemoryDataset, GridMeta]:
         """Load only requested variables/slices and close the NetCDF immediately."""
@@ -324,7 +324,7 @@ class FileLoader:
                 internal_lon=target_lon,
             )
 
-            dimensions: dict[str, int] = {}
+            dimensions: Dict[str, int] = {}
             for dim_name, dim in ds.dimensions.items():
                 if dim_name == lat_name:
                     dimensions[dim_name] = len(lat_indices)
@@ -335,7 +335,7 @@ class FileLoader:
                 else:
                     dimensions[dim_name] = len(dim)
 
-            variables: dict[str, np.ndarray] = {
+            variables: Dict[str, np.ndarray] = {
                 lat_name: np.asarray(lat_raw, dtype=np.float32),
                 lon_name: np.asarray(lon_raw, dtype=np.float32),
             }
@@ -381,7 +381,7 @@ class FileLoader:
 
     def load_pft_map(
         self,
-        pft_path: str | Path,
+        pft_path: Union[str, Path],
         *,
         pft_var: Optional[str],
         target_lat_asc: np.ndarray,
