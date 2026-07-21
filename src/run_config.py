@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 from typing import Any, Dict, Optional
 
+import os
 import yaml
 
 
@@ -207,14 +208,98 @@ def build_run_metadata(config: ResolvedRunConfig) -> Dict[str, Any]:
     }
 
 
-def write_run_manifest(config: ResolvedRunConfig, output_dir: Path, metadata: Dict[str, Any]) -> None:
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Atomically replace a UTF-8 text file."""
+
+    temporary = path.with_name(
+        ".{}.{}.tmp".format(path.name, os.getpid())
+    )
+    temporary.write_text(text, encoding="utf-8")
+    os.replace(str(temporary), str(path))
+
+
+def _manifest_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Fields that uniquely identify one model configuration."""
+
+    keys = (
+        "run_name",
+        "resolution",
+        "input_format",
+        "input_base_year",
+        "start_year",
+        "end_year",
+        "state_file",
+        "transition_file",
+        "pft_file",
+        "pft_update_mode",
+        "parameter_file",
+        "experiment_file",
+        "run_config_sha256",
+        "parameter_sha256",
+        "experiment_sha256",
+        "git_commit",
+    )
+    return {
+        key: metadata.get(key)
+        for key in keys
+    }
+
+
+def write_run_manifest(
+    config: ResolvedRunConfig,
+    output_dir: Path,
+    metadata: Dict[str, Any],
+    *,
+    manifest_name: str = "run_manifest.json",
+    overwrite_manifest: bool = True,
+) -> None:
+    """Write the copied run YAML and one run or band manifest.
+
+    A run directory cannot be reused with a different run YAML. This prevents
+    output bands produced from different model configurations from being mixed.
+    """
+
     output_dir.mkdir(parents=True, exist_ok=True)
+
     config_copy = output_dir / "run_config.yml"
-    manifest = output_dir / "run_manifest.json"
-    if not config_copy.exists():
-        config_copy.write_text(config.raw_text, encoding="utf-8")
-    if not manifest.exists():
-        manifest.write_text(
-            json.dumps(metadata, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+
+    try:
+        # Exclusive creation is safe when multiple SLURM tasks start together.
+        with config_copy.open("x", encoding="utf-8") as handle:
+            handle.write(config.raw_text)
+    except FileExistsError:
+        existing_config = config_copy.read_text(encoding="utf-8")
+        if existing_config != config.raw_text:
+            raise RuntimeError(
+                "The output directory already contains a different "
+                "run_config.yml. Use a new run.name or remove the old "
+                "run directory before starting this simulation."
+            )
+
+    manifest_path = output_dir / manifest_name
+
+    if manifest_path.exists() and not overwrite_manifest:
+        try:
+            existing_metadata = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Existing manifest cannot be read: {}".format(manifest_path)
+            ) from exc
+
+        if _manifest_identity(existing_metadata) != _manifest_identity(metadata):
+            raise RuntimeError(
+                "The output directory belongs to a different model build or "
+                "configuration. Use a new run.name. Existing manifest: {}"
+                .format(manifest_path)
+            )
+        return
+
+    manifest_text = json.dumps(
+        metadata,
+        indent=2,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    _atomic_write_text(manifest_path, manifest_text)

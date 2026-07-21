@@ -2,5 +2,5 @@
 numpy>=1.20,<2.0
 netCDF4>=1.6,<2.0
 PyYAML>=6.0,<7.0
-pandas>=1.5,<3.0
-pyarrow>=10,<21
+pandas>=1.5,<2.1
+pyarrow>=10,<18

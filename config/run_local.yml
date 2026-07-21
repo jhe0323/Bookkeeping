@@ -1,0 +1,49 @@
+run:
+  name: local_1deg_test 
+  resolution: 1deg
+  input_format: original_luh2
+  input_base_year: 850
+  start_year: 850
+  end_year: 2020
+  area_unit: ha
+
+paths:
+  data_dir: ../In_ncfile
+  output_dir: ../Out_ncfile
+
+inputs:
+  states: states_1deg.nc
+  transitions: transitions_1deg.nc
+  pft: IBIS_PFT_dominant_1deg.nc
+  pft_variable: null
+  time_encoding: index
+
+parameters:
+  path: config/config.yml
+
+experiment:
+  path: config/experiments/harvest_area.yml
+
+model_overrides:
+  dynamic_carbon_density:
+    enabled: false
+
+pft:
+  base_year: 850
+  time_encoding: auto
+  update_mode: annual_conservative
+  min_year_policy: clip
+  max_year_policy: clip
+
+validation:
+  run_before_simulation: false
+  full_scan: false
+
+output:
+  filename_prefix: summary_local
+  compression_level: 4
+  sync_every: 200
+
+server:
+  band_size_deg: 10
+  stagger_max: 0

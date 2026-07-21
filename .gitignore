@@ -96,8 +96,6 @@ closure*.csv
 .env.*
 config/local.yml
 config/local.yaml
-config/*_local.yml
-config/*_local.yaml
 
 # ----------------------------------------------------------------------
 # Microsoft Office temporary files
