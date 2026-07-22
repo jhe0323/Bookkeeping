@@ -111,6 +111,9 @@ class LULCCSimulator:
         pft_update_mode: str = "annual_conservative",
         pft_min_year_policy: str = "clip",
         pft_max_year_policy: str = "clip",
+        pft_missing_cell_policy: str = "error",
+        pft_nearest_search_radius: int = 8,
+        pft_default_index: Optional[int] = None,
         lat_slice: Optional[slice] = None,
         lon_slice: Optional[slice] = None,
         area_unit: str = "ha",
@@ -137,6 +140,29 @@ class LULCCSimulator:
         self.pft_update_mode = str(pft_update_mode).lower()
         if self.pft_update_mode not in {"fixed_initial", "annual_conservative"}:
             raise ValueError("pft.update_mode must be fixed_initial or annual_conservative")
+
+        self.pft_missing_cell_policy = str(pft_missing_cell_policy).lower()
+        if self.pft_missing_cell_policy not in {"error", "nearest", "default"}:
+            raise ValueError(
+                "pft.missing_cell_policy must be error, nearest, or default"
+            )
+        self.pft_nearest_search_radius = int(pft_nearest_search_radius)
+        if self.pft_nearest_search_radius < 1:
+            raise ValueError("pft.nearest_search_radius must be >= 1")
+        self.pft_default_index = (
+            None if pft_default_index is None else int(pft_default_index)
+        )
+        if self.pft_default_index is not None and not (
+            1 <= self.pft_default_index <= self.params.n_pft
+        ):
+            raise ValueError(
+                "pft.default_index must use one-based numbering in 1..{}"
+                .format(self.params.n_pft)
+            )
+        self._pft_fallback_cache: Dict[Tuple[int, int, int], np.ndarray] = {}
+        self._pft_fallback_count = 0
+        self._pft_fallback_messages = 0
+
         self.area_unit = area_unit
         self.run_metadata = dict(run_metadata or {})
         self.compression_level = int(compression_level)
@@ -228,6 +254,11 @@ class LULCCSimulator:
             "pft_variable": self.pft_data.variable_name,
             "pft_source_mode": self.pft_data.source_mode,
             "pft_dynamic": int(self.pft_data.dynamic),
+            "pft_missing_cell_policy": self.pft_missing_cell_policy,
+            "pft_nearest_search_radius": self.pft_nearest_search_radius,
+            "pft_default_index": (
+                self.pft_default_index if self.pft_default_index is not None else "none"
+            ),
             "transition_channel_count": len(self.transition_channels),
             "state_channel_count": len(self.state_channels),
         })
@@ -374,10 +405,122 @@ class LULCCSimulator:
             )
         return float(np.clip(result, 0.0, 1.0))
 
+    def _normalize_pft_candidate(self, values) -> Optional[np.ndarray]:
+        """Return normalized PFT fractions, or None for an all-empty cell.
+
+        Structural errors, such as a wrong number of PFT classes, are kept strict.
+        Only the legacy-map case where every fraction is missing/non-positive is
+        treated as a recoverable empty PFT cell.
+        """
+        array = values.filled(np.nan) if hasattr(values, "filled") else values
+        array = np.asarray(array, dtype=np.float64).reshape(-1)
+        if array.size != self.params.n_pft:
+            # Preserve the detailed error from the shared normalization routine.
+            return normalize_pft_fractions(array, self.params.n_pft)
+
+        cleaned = np.where(np.isfinite(array) & (array > 0.0), array, 0.0)
+        total = float(cleaned.sum())
+        if total <= 0.0:
+            return None
+        return cleaned / total
+
+    def _default_pft_grid(self) -> Optional[np.ndarray]:
+        if self.pft_default_index is None:
+            return None
+        result = np.zeros(self.params.n_pft, dtype=np.float64)
+        result[self.pft_default_index - 1] = 1.0
+        return result
+
+    def _nearest_valid_pft_grid(
+        self,
+        calendar_year: int,
+        i: int,
+        j: int,
+    ) -> Tuple[Optional[np.ndarray], Optional[Tuple[int, int]]]:
+        """Find the closest valid PFT cell within the configured local radius."""
+        nlat, nlon = self._area_grid.shape
+        max_radius = self.pft_nearest_search_radius
+
+        for radius in range(1, max_radius + 1):
+            candidates = []
+            i0 = max(0, i - radius)
+            i1 = min(nlat - 1, i + radius)
+            j0 = max(0, j - radius)
+            j1 = min(nlon - 1, j + radius)
+
+            # Search only the outer ring so the first successful radius is nearest.
+            for ii in range(i0, i1 + 1):
+                for jj in range(j0, j1 + 1):
+                    if max(abs(ii - i), abs(jj - j)) != radius:
+                        continue
+                    distance2 = (ii - i) ** 2 + (jj - j) ** 2
+                    candidates.append((distance2, ii, jj))
+
+            for _, ii, jj in sorted(candidates):
+                values = self.pft_data.get_cell(calendar_year, ii, jj)
+                normalized = self._normalize_pft_candidate(values)
+                if normalized is not None:
+                    return normalized, (ii, jj)
+
+        return None, None
+
     def _get_cell_pft_grid(self, lat_idx: int, lon_idx: int, calendar_year: int) -> np.ndarray:
         i, j = self._normalize_ij(lat_idx, lon_idx)
+        cache_year = int(calendar_year) if self.pft_data.dynamic else -1
+        cache_key = (cache_year, i, j)
+        cached = self._pft_fallback_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+
         values = self.pft_data.get_cell(calendar_year, i, j)
-        return normalize_pft_fractions(values, self.params.n_pft)
+        normalized = self._normalize_pft_candidate(values)
+        if normalized is not None:
+            return normalized
+
+        replacement = None
+        source_cell = None
+        if self.pft_missing_cell_policy == "nearest":
+            replacement, source_cell = self._nearest_valid_pft_grid(
+                calendar_year, i, j
+            )
+            if replacement is None:
+                replacement = self._default_pft_grid()
+        elif self.pft_missing_cell_policy == "default":
+            replacement = self._default_pft_grid()
+
+        if replacement is None:
+            lat = float(self._latitudes[i])
+            lon = float(self._longitudes[j])
+            raise ValueError(
+                "A simulated land cell has no valid PFT fraction: "
+                "year={}, cell=({},{}), lat={}, lon={}, policy={}. "
+                "For a legacy PFT mask, set pft.missing_cell_policy=nearest "
+                "and optionally pft.default_index in the run YAML."
+                .format(
+                    calendar_year, i, j, lat, lon, self.pft_missing_cell_policy
+                )
+            )
+
+        self._pft_fallback_cache[cache_key] = replacement.copy()
+        self._pft_fallback_count += 1
+        if self._pft_fallback_messages < 20:
+            lat = float(self._latitudes[i])
+            lon = float(self._longitudes[j])
+            if source_cell is None:
+                detail = "default PFT {}".format(self.pft_default_index)
+            else:
+                si, sj = source_cell
+                detail = "nearest valid cell ({},{}) at lat={}, lon={}".format(
+                    si, sj, float(self._latitudes[si]), float(self._longitudes[sj])
+                )
+            print(
+                "[PFT-FALLBACK] year={}, cell=({},{}), lat={}, lon={} -> {}"
+                .format(calendar_year, i, j, lat, lon, detail),
+                flush=True,
+            )
+            self._pft_fallback_messages += 1
+
+        return replacement.copy()
 
     def _get_initial_fractions(self, lat_idx: int, lon_idx: int) -> Dict[str, float]:
         i, j = self._normalize_ij(lat_idx, lon_idx)

@@ -38,6 +38,9 @@ class ResolvedRunConfig:
     pft_update_mode: str
     pft_min_year_policy: str
     pft_max_year_policy: str
+    pft_missing_cell_policy: str
+    pft_nearest_search_radius: int
+    pft_default_index: Optional[int]
     experiment_path: Path
     base_parameter_path: Path
     output_root: Path
@@ -144,6 +147,12 @@ def load_run_config(
         pft_update_mode=str(pft.get("update_mode", "annual_conservative")),
         pft_min_year_policy=str(pft.get("min_year_policy", "clip")),
         pft_max_year_policy=str(pft.get("max_year_policy", "clip")),
+        pft_missing_cell_policy=str(pft.get("missing_cell_policy", "error")),
+        pft_nearest_search_radius=int(pft.get("nearest_search_radius", 8)),
+        pft_default_index=(
+            None if pft.get("default_index") is None
+            else int(pft.get("default_index"))
+        ),
         experiment_path=experiment_path,
         base_parameter_path=base_parameter_path,
         output_root=output_root,
@@ -236,6 +245,11 @@ def build_run_metadata(config: ResolvedRunConfig) -> Dict[str, Any]:
         "pft_fingerprint": file_fingerprint(config.pft_path),
         "pft_variable_requested": config.pft_variable or "auto",
         "pft_update_mode": config.pft_update_mode,
+        "pft_missing_cell_policy": config.pft_missing_cell_policy,
+        "pft_nearest_search_radius": config.pft_nearest_search_radius,
+        "pft_default_index": (
+            config.pft_default_index if config.pft_default_index is not None else "none"
+        ),
         "parameter_file": str(config.base_parameter_path),
         "experiment_file": str(config.experiment_path),
         "run_config_file": str(config.config_path),
@@ -278,6 +292,9 @@ def manifest_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "transition_fingerprint",
         "pft_fingerprint",
         "pft_update_mode",
+        "pft_missing_cell_policy",
+        "pft_nearest_search_radius",
+        "pft_default_index",
         "parameter_file",
         "experiment_file",
         "run_config_sha256",

@@ -35,12 +35,19 @@ pft:
   min_year_policy: clip
   max_year_policy: clip
 
+  # Compatibility with the previous IBIS dominant PFT map.
+  # A LUH2 land cell whose PFT fractions are all zero uses the nearest
+  # valid PFT cell. This avoids silently assigning zero carbon to land.
+  missing_cell_policy: nearest   # error, nearest, or default
+  nearest_search_radius: 8       # grid cells on the loaded band
+  default_index: null            # optional one-based PFT ID, e.g. 15
+
 validation:
   run_before_simulation: false
-  full_scan: false
+  full_scan: true
 
 output:
-  filename_prefix: summary_local
+  filename_prefix: summary_1deg
   compression_level: 4
   sync_every: 200
 

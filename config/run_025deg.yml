@@ -1,7 +1,7 @@
 run:
-  name: baseline_025deg_area
+  name: baseline_025deg_area_pftfallback_v1
   resolution: 025deg
-  input_format: original_luh2   # original_luh2 or vscp
+  input_format: original_luh2
   input_base_year: 850
   start_year: 850
   end_year: 2020
@@ -15,8 +15,8 @@ inputs:
   states: states.nc
   transitions: transitions.nc
   pft: IBIS_PFT_dominant_0.25deg.nc
-  pft_variable: null            # null = auto-detect
-  time_encoding: index          # input time 0..1170 -> calendar 850..2020
+  pft_variable: null
+  time_encoding: index
 
 parameters:
   path: config/config.yml
@@ -24,8 +24,6 @@ parameters:
 experiment:
   path: config/experiments/harvest_area.yml
 
-# Run-specific parameter switches are merged after config.yml and experiment YAML.
-# Keeping them here ensures the exact simulation setup is copied into the output.
 model_overrides:
   dynamic_carbon_density:
     enabled: false
@@ -33,9 +31,12 @@ model_overrides:
 pft:
   base_year: 850
   time_encoding: auto
-  update_mode: annual_conservative  # fixed_initial or annual_conservative
+  update_mode: annual_conservative
   min_year_policy: clip
   max_year_policy: clip
+  missing_cell_policy: nearest
+  nearest_search_radius: 12
+  default_index: null
 
 validation:
   run_before_simulation: false
