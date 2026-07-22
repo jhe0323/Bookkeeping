@@ -805,7 +805,7 @@ Bookkeeping/
 
 ## 13. Installation
 
-The current source code requires Python 3.10 or later.
+The current source code requires Python 3.8 or later.
 
 Create and activate a virtual environment:
 

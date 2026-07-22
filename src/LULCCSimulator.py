@@ -80,6 +80,17 @@ _HARVEST_FAMILIES = ("primf", "primn", "secmf", "secyf", "secnf")
 _TRANSITION_RE = re.compile(r"^(.+)_to_(.+?)(?:_frac)?$")
 
 
+def _transition_event_kind(src: str, dst: str) -> Optional[str]:
+    """Return the implemented bookkeeping event for one internal transition."""
+    if src in ("v", "s") and dst in ("p", "c"):
+        return "clearing"
+    if src in ("c", "p") and dst == "s":
+        return "abandonment"
+    if src in ("c", "p") and dst in ("c", "p") and src != dst:
+        return "other"
+    return None
+
+
 class LULCCSimulator:
     def __init__(
         self,
@@ -279,7 +290,7 @@ class LULCCSimulator:
                 if raw_src not in mapping or raw_dst not in mapping:
                     continue
                 src, dst = mapping[raw_src], mapping[raw_dst]
-            if src == dst:
+            if src == dst or _transition_event_kind(str(src), str(dst)) is None:
                 continue
             item = (str(name), str(src), str(dst))
             if item not in seen:
@@ -609,17 +620,16 @@ class LULCCSimulator:
                 diag=local_diag,
             )
 
-            handled = True
-            if src in ("v", "s") and dst in ("p", "c"):
+            event_kind = _transition_event_kind(src, dst)
+            if event_kind == "clearing":
                 apply_clearing(**common)
-            elif src in ("c", "p") and dst == "s":
+            elif event_kind == "abandonment":
                 apply_abandonment(**common)
-            elif src in ("c", "p") and dst in ("c", "p") and src != dst:
+            elif event_kind == "other":
                 apply_others(**common)
             else:
-                handled = False
-
-            if not handled:
+                # This should be unreachable because unsupported channels are
+                # filtered during compilation. Keep the guard for safety.
                 continue
             accumulated_cbar += local_cbar - base_cbar
             accumulated_delta += local_delta - base_delta

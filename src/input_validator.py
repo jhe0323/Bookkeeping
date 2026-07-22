@@ -20,6 +20,14 @@ _TRANSITION_RE = re.compile(r"^(.+)_to_(.+?)(?:_frac)?$")
 _HARVEST_FAMILIES = ("primf", "primn", "secmf", "secyf", "secnf")
 
 
+def _is_supported_transition(src: str, dst: str) -> bool:
+    return bool(
+        (src in ("v", "s") and dst in ("p", "c"))
+        or (src in ("c", "p") and dst == "s")
+        or (src in ("c", "p") and dst in ("c", "p") and src != dst)
+    )
+
+
 def _coord_equal(a, b, *, longitude=False, atol=1e-7) -> bool:
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
@@ -210,11 +218,17 @@ def validate_inputs(
         match = _TRANSITION_RE.match(name)
         if not match:
             continue
-        src, dst = match.groups()
+        raw_src, raw_dst = match.groups()
         if config.input_format == "vscp":
-            if src in {"v", "s", "p", "c", "U"} and dst in {"v", "s", "p", "c", "U"} and src != dst:
-                transition_channels.append(name)
-        elif src in mapping and dst in mapping and mapping[src] != mapping[dst]:
+            src, dst = raw_src, raw_dst
+            if src not in {"v", "s", "p", "c", "U"} or dst not in {"v", "s", "p", "c", "U"}:
+                continue
+        else:
+            if raw_src not in mapping or raw_dst not in mapping:
+                continue
+            src, dst = mapping[raw_src], mapping[raw_dst]
+
+        if _is_supported_transition(str(src), str(dst)):
             transition_channels.append(name)
     if not transition_channels:
         error("No usable transition channels were found.")

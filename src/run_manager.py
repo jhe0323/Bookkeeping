@@ -1,9 +1,10 @@
 """Common local/server run orchestration."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 import random
 import time
 
@@ -16,11 +17,41 @@ from src.input_validator import validate_inputs
 from src.run_config import (
     build_run_metadata,
     load_run_config,
+    manifest_identity,
     write_run_manifest,
 )
 
 
-def output_complete(path: Path, expected_time: int, expected_lat: int, expected_lon: int) -> bool:
+def _canonical_metadata_value(value: Any) -> str:
+    """Normalize Python and NetCDF attribute values for stable comparison."""
+
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                value = json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def output_complete(
+    path: Path,
+    expected_time: int,
+    expected_lat: int,
+    expected_lon: int,
+    expected_metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
     if not path.exists():
         return False
     try:
@@ -28,12 +59,91 @@ def output_complete(path: Path, expected_time: int, expected_lat: int, expected_
             actual = tuple(len(ds.dimensions[name]) for name in ("time", "lat", "lon"))
             if actual != (expected_time, expected_lat, expected_lon):
                 return False
+
+            if expected_metadata is not None:
+                for key, expected in manifest_identity(expected_metadata).items():
+                    if key not in ds.ncattrs():
+                        return False
+                    actual_value = ds.getncattr(key)
+                    if _canonical_metadata_value(actual_value) != _canonical_metadata_value(expected):
+                        return False
+
             if "done" not in ds.variables:
                 return False
             done = np.asarray(ds.variables["done"][:])
             return done.shape == (expected_lat, expected_lon) and bool(np.all(done == 1))
     except Exception:
         return False
+
+
+_RUNTIME_METADATA_KEYS = (
+    "pft_variable",
+    "pft_source_mode",
+    "pft_dynamic",
+    "transition_channel_count",
+    "state_channel_count",
+)
+
+
+def _read_runtime_metadata(path: Path) -> Dict[str, Any]:
+    """Read runtime-resolved metadata from an existing NetCDF output."""
+
+    runtime: Dict[str, Any] = {}
+    try:
+        with nc.Dataset(path, "r") as ds:
+            for key in _RUNTIME_METADATA_KEYS:
+                if key in ds.ncattrs():
+                    value = ds.getncattr(key)
+                    if isinstance(value, np.generic):
+                        value = value.item()
+                    if isinstance(value, bytes):
+                        value = value.decode("utf-8", errors="replace")
+                    runtime[key] = value
+    except Exception:
+        return {}
+    return runtime
+
+
+def _persist_runtime_manifests(
+    *,
+    config,
+    output_dir: Path,
+    base_metadata: Dict[str, Any],
+    runtime_metadata: Dict[str, Any],
+    server_mode: bool,
+    band_id: Optional[int],
+) -> None:
+    """Persist runtime-resolved metadata without shared-file write races."""
+
+    if server_mode:
+        if band_id is None:
+            raise ValueError("band_id is required in server mode")
+        write_run_manifest(
+            config,
+            output_dir,
+            runtime_metadata,
+            manifest_name="run_manifest.rank{:03d}.json".format(band_id),
+            overwrite_manifest=True,
+        )
+        if band_id == 0:
+            shared_runtime_metadata = dict(base_metadata)
+            for key in _RUNTIME_METADATA_KEYS:
+                shared_runtime_metadata[key] = runtime_metadata.get(key)
+            write_run_manifest(
+                config,
+                output_dir,
+                shared_runtime_metadata,
+                manifest_name="run_manifest.json",
+                overwrite_manifest=True,
+            )
+    else:
+        write_run_manifest(
+            config,
+            output_dir,
+            runtime_metadata,
+            manifest_name="run_manifest.json",
+            overwrite_manifest=True,
+        )
 
 
 def _band_slice(config, band_id: int):
@@ -75,15 +185,14 @@ def run_from_config(
     output_dir = config.output_root / config.resolution / config.run_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if config.validate_before_run:
-        report = validate_inputs(
-            config,
-            report_path=output_dir / "input_validation_report.json",
+    if config.validate_before_run and server_mode:
+        raise RuntimeError(
+            "Automatic full input validation is disabled for server array jobs "
+            "because every band would otherwise rescan the same global inputs. "
+            "Run `python3 -m tools.validate_inputs` once before sbatch, confirm "
+            "PASS, and set validation.run_before_simulation=false in the server "
+            "run YAML."
         )
-        if report["status"] != "PASS":
-            raise RuntimeError(
-                "Input validation failed. See input_validation_report.json in the run directory."
-            )
 
     if server_mode:
         band_id = int(os.environ.get("BAND_ID", os.environ.get("SLURM_ARRAY_TASK_ID", "0")))
@@ -109,6 +218,16 @@ def run_from_config(
 
     metadata["output_file"] = str(output_path)
 
+    if config.validate_before_run:
+        report = validate_inputs(
+            config,
+            report_path=output_dir / "input_validation_report.json",
+        )
+        if report["status"] != "PASS":
+            raise RuntimeError(
+                "Input validation failed. See input_validation_report.json in the run directory."
+            )
+
     if server_mode:
         # Shared manifest: common information for the complete global run.
         write_run_manifest(
@@ -128,13 +247,13 @@ def run_from_config(
             overwrite_manifest=True,
         )
     else:
-        # A local run has only one output file.
+        # Verify an existing local run before deciding whether output can be reused.
         write_run_manifest(
             config,
             output_dir,
             metadata,
             manifest_name="run_manifest.json",
-            overwrite_manifest=True,
+            overwrite_manifest=False,
         )
 
     state_info = FileLoader().inspect_dataset(config.state_path)
@@ -142,7 +261,25 @@ def run_from_config(
     expected_lon = len(state_info.lon) if lon_slice is None else lon_slice.stop - lon_slice.start
     expected_time = config.years + 1
 
-    if output_complete(output_path, expected_time, expected_lat, expected_lon):
+    if output_complete(
+        output_path,
+        expected_time,
+        expected_lat,
+        expected_lon,
+        expected_metadata=base_metadata,
+    ):
+        # Backfill runtime metadata from the completed NetCDF when an existing
+        # run is skipped, so manifests remain complete without reloading inputs.
+        existing_runtime_metadata = dict(metadata)
+        existing_runtime_metadata.update(_read_runtime_metadata(output_path))
+        _persist_runtime_manifests(
+            config=config,
+            output_dir=output_dir,
+            base_metadata=base_metadata,
+            runtime_metadata=existing_runtime_metadata,
+            server_mode=server_mode,
+            band_id=band_id,
+        )
         print(f"[SKIP] complete output exists: {output_path}")
         return output_path
     if output_path.exists():
@@ -179,12 +316,32 @@ def run_from_config(
         parameter_overrides=config.raw.get("model_overrides", {}) or {},
         compression_level=config.compression_level,
     )
+
+    # The simulator adds runtime-resolved information such as the actual PFT
+    # variable, PFT layout, and compiled channel counts. Persist those values
+    # after initialization instead of leaving them only in NetCDF attributes.
+    runtime_metadata = dict(simulator.run_metadata)
+    _persist_runtime_manifests(
+        config=config,
+        output_dir=output_dir,
+        base_metadata=base_metadata,
+        runtime_metadata=runtime_metadata,
+        server_mode=server_mode,
+        band_id=band_id,
+    )
+
     simulator.run_simulation_grid(
         out_nc=str(output_path),
         lat_slice=None,
         lon_slice=None,
         sync_every=config.sync_every,
     )
-    if not output_complete(output_path, expected_time, expected_lat, expected_lon):
+    if not output_complete(
+        output_path,
+        expected_time,
+        expected_lat,
+        expected_lon,
+        expected_metadata=base_metadata,
+    ):
         raise RuntimeError(f"Output failed completion check: {output_path}")
     return output_path

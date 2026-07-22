@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import subprocess
 import os
+import uuid
 from typing import Any, Dict, Optional, Union
 
 import yaml
@@ -175,6 +176,38 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def file_fingerprint(path: Path, sample_bytes: int = 1024 * 1024) -> Dict[str, Any]:
+    """Return a fast fingerprint for a potentially large input file.
+
+    The fingerprint combines file size, nanosecond modification time, and a
+    SHA-256 digest of the first and last sample blocks. It is intentionally
+    much cheaper than hashing an entire multi-gigabyte NetCDF file while still
+    detecting normal same-name input replacements.
+    """
+
+    resolved = path.resolve()
+    stat = resolved.stat()
+    size_bytes = int(stat.st_size)
+    sample_bytes = max(1, int(sample_bytes))
+
+    digest = hashlib.sha256()
+    digest.update(str(size_bytes).encode("ascii"))
+    with resolved.open("rb") as handle:
+        first = handle.read(sample_bytes)
+        digest.update(first)
+        if size_bytes > sample_bytes:
+            handle.seek(max(0, size_bytes - sample_bytes))
+            digest.update(handle.read(sample_bytes))
+
+    return {
+        "path": str(resolved),
+        "size_bytes": size_bytes,
+        "mtime_ns": int(stat.st_mtime_ns),
+        "sample_bytes": sample_bytes,
+        "sample_sha256": digest.hexdigest(),
+    }
+
+
 def git_commit(repo_root: Path) -> str:
     try:
         return subprocess.check_output(
@@ -198,6 +231,9 @@ def build_run_metadata(config: ResolvedRunConfig) -> Dict[str, Any]:
         "state_file": str(config.state_path),
         "transition_file": str(config.transition_path),
         "pft_file": str(config.pft_path),
+        "state_fingerprint": file_fingerprint(config.state_path),
+        "transition_fingerprint": file_fingerprint(config.transition_path),
+        "pft_fingerprint": file_fingerprint(config.pft_path),
         "pft_variable_requested": config.pft_variable or "auto",
         "pft_update_mode": config.pft_update_mode,
         "parameter_file": str(config.base_parameter_path),
@@ -216,13 +252,16 @@ def _atomic_write_text(path: Path, text: str) -> None:
     """Atomically replace a UTF-8 text file."""
 
     temporary = path.with_name(
-        ".{}.{}.tmp".format(path.name, os.getpid())
+        ".{}.{}.{}.tmp".format(path.name, os.getpid(), uuid.uuid4().hex)
     )
-    temporary.write_text(text, encoding="utf-8")
-    os.replace(str(temporary), str(path))
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(str(temporary), str(path))
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
-def _manifest_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
+def manifest_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
     """Fields that uniquely identify one model configuration."""
 
     keys = (
@@ -235,6 +274,9 @@ def _manifest_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "state_file",
         "transition_file",
         "pft_file",
+        "state_fingerprint",
+        "transition_fingerprint",
+        "pft_fingerprint",
         "pft_update_mode",
         "parameter_file",
         "experiment_file",
@@ -292,7 +334,7 @@ def write_run_manifest(
                 "Existing manifest cannot be read: {}".format(manifest_path)
             ) from exc
 
-        if _manifest_identity(existing_metadata) != _manifest_identity(metadata):
+        if manifest_identity(existing_metadata) != manifest_identity(metadata):
             raise RuntimeError(
                 "The output directory belongs to a different model build or "
                 "configuration. Use a new run.name. Existing manifest: {}"
