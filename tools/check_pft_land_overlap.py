@@ -149,6 +149,8 @@ def main() -> int:
     resolvable_area_ha = 0.0
     unresolved_cells = 0
     unresolved_area_ha = 0.0
+    skipped_cells = 0
+    skipped_area_ha = 0.0
 
     dominant_counts = Counter()
     radius_counts: Dict[int, int] = defaultdict(int)
@@ -202,7 +204,24 @@ def main() -> int:
                 )
 
             resolved = False
-            if policy == "nearest":
+            # ---------------------------------------------------------
+            # skip policy:
+            # PFT missing is allowed and intentionally excluded
+            # from carbon bookkeeping.
+            # ---------------------------------------------------------
+            if policy == "skip":
+
+                skipped_cells += 1
+                skipped_area_ha += cell_land_area_ha
+
+                continue
+
+
+            # ---------------------------------------------------------
+            # nearest policy
+            # ---------------------------------------------------------
+            elif policy == "nearest":
+
                 radius, source_cell, source_pft = _nearest_valid_cell(
                     pft_data=pft_data,
                     year=cfg.start_year,
@@ -212,30 +231,49 @@ def main() -> int:
                     nlon=nlon,
                     max_radius=max_radius,
                 )
+
                 if source_pft is not None and radius is not None:
+
                     resolved = True
                     resolvable_cells += 1
                     resolvable_area_ha += cell_land_area_ha
+
                     radius_counts[radius] += 1
                     radius_area_ha[radius] += cell_land_area_ha
+
                 elif has_default:
+
                     resolved = True
                     resolvable_cells += 1
                     resolvable_area_ha += cell_land_area_ha
+
                     radius_counts[-1] += 1
                     radius_area_ha[-1] += cell_land_area_ha
 
+
+            # ---------------------------------------------------------
+            # default policy
+            # ---------------------------------------------------------
             elif policy == "default" and has_default:
+
                 resolved = True
                 resolvable_cells += 1
                 resolvable_area_ha += cell_land_area_ha
+
                 radius_counts[-1] += 1
                 radius_area_ha[-1] += cell_land_area_ha
 
+
+            # ---------------------------------------------------------
+            # error / unresolved fallback
+            # ---------------------------------------------------------
             if not resolved:
+
                 unresolved_cells += 1
                 unresolved_area_ha += cell_land_area_ha
+
                 if len(unresolved_examples) < args.examples:
+
                     unresolved_examples.append(
                         (
                             i,
@@ -260,6 +298,17 @@ def main() -> int:
         if total_land_area_ha > 0.0
         else 0.0
     )
+    skipped_cell_fraction = (
+        skipped_cells / land_cells
+        if land_cells
+        else 0.0
+    )
+
+    skipped_area_fraction = (
+        skipped_area_ha / total_land_area_ha
+        if total_land_area_ha > 0.0
+        else 0.0
+    )
 
     print("config:", cfg.config_path)
     print("PFT variable:", pft_data.variable_name)
@@ -276,7 +325,18 @@ def main() -> int:
     print("Raw mismatch fraction by cell count:", raw_cell_fraction)
     print("Raw mismatch fraction by land area:", raw_area_fraction)
     print()
-
+    if policy == "skip":
+        print()
+        print("PFT-skipped land cells:", skipped_cells)
+        print("PFT-skipped land area (ha):", skipped_area_ha)
+        print(
+            "PFT-skipped fraction by cell count:",
+            skipped_cell_fraction,
+        )
+        print(
+            "PFT-skipped fraction by land area:",
+            skipped_area_fraction,
+        )
     print("Resolvable by configured fallback:", resolvable_cells)
     print("Resolvable land area (ha):", resolvable_area_ha)
     print("Still unresolved after configured fallback:", unresolved_cells)
@@ -324,7 +384,18 @@ def main() -> int:
             "after applying the configured fallback."
         )
         return 1
+    
+    if policy == "skip":
 
+        print()
+
+        print(
+            "RESULT: PASS — land cells without valid PFT are intentionally "
+            "excluded from carbon bookkeeping under missing_cell_policy=skip."
+        )
+
+        return 0
+        
     print()
     print(
         "RESULT: PASS — all LUH2 land cells have a direct PFT or can be "

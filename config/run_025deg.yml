@@ -34,7 +34,7 @@ pft:
   update_mode: annual_conservative
   min_year_policy: clip
   max_year_policy: clip
-  missing_cell_policy: nearest
+  missing_cell_policy: nearest  # error, nearest, default, or skip
   nearest_search_radius: 12
   default_index: null
 

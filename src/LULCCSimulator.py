@@ -65,10 +65,19 @@ TRANSITION_DIAG_KEYS = [
     "transition_clipped_area",
 ]
 
+PFT_SKIP_DIAG_KEYS = [
+    "pft_skipped_cell",
+    "pft_skipped_transition_area",
+    "pft_skipped_clearing_area",
+    "pft_skipped_abandonment_area",
+    "pft_skipped_other_area",
+    "pft_skipped_harvest_area",
+]
+
 FORMAL_AREA_DIAG_KEYS = [
     "area_clearing", "area_abandonment", "area_other", "area_harvest",
     "area_deforestation",
-] + TRANSITION_DIAG_KEYS + HARVEST_DIAG_KEYS
+] + TRANSITION_DIAG_KEYS + HARVEST_DIAG_KEYS + PFT_SKIP_DIAG_KEYS
 
 FORMAL_OUTPUT_KEYS = FORMAL_FLUX_KEYS + FORMAL_AREA_DIAG_KEYS
 STATE_OUTPUT_KEYS = [
@@ -142,11 +151,13 @@ class LULCCSimulator:
             raise ValueError("pft.update_mode must be fixed_initial or annual_conservative")
 
         self.pft_missing_cell_policy = str(pft_missing_cell_policy).lower()
-        if self.pft_missing_cell_policy not in {"error", "nearest", "default"}:
+        if self.pft_missing_cell_policy not in {"error", "nearest", "default", "skip"}:
             raise ValueError(
-                "pft.missing_cell_policy must be error, nearest, or default"
+                "pft.missing_cell_policy must be error, nearest, default, or skip"
             )
         self.pft_nearest_search_radius = int(pft_nearest_search_radius)
+        self._pft_skip_count = 0
+        self._pft_skip_messages = 0
         if self.pft_nearest_search_radius < 1:
             raise ValueError("pft.nearest_search_radius must be >= 1")
         self.pft_default_index = (
@@ -437,87 +448,174 @@ class LULCCSimulator:
         i: int,
         j: int,
     ) -> Tuple[Optional[np.ndarray], Optional[Tuple[int, int]]]:
-        """Find the closest valid PFT cell within the configured local radius."""
+
+        """Find the closest valid PFT cell within the configured local radius.
+
+        Longitude wraps globally; latitude does not wrap.
+        """
+
         nlat, nlon = self._area_grid.shape
         max_radius = self.pft_nearest_search_radius
 
         for radius in range(1, max_radius + 1):
-            candidates = []
-            i0 = max(0, i - radius)
-            i1 = min(nlat - 1, i + radius)
-            j0 = max(0, j - radius)
-            j1 = min(nlon - 1, j + radius)
 
-            # Search only the outer ring so the first successful radius is nearest.
-            for ii in range(i0, i1 + 1):
-                for jj in range(j0, j1 + 1):
-                    if max(abs(ii - i), abs(jj - j)) != radius:
+            candidates = []
+
+            for di in range(-radius, radius + 1):
+
+                ii = i + di
+
+                if ii < 0 or ii >= nlat:
+                    continue
+
+                for dj in range(-radius, radius + 1):
+
+                    if max(abs(di), abs(dj)) != radius:
                         continue
-                    distance2 = (ii - i) ** 2 + (jj - j) ** 2
-                    candidates.append((distance2, ii, jj))
+
+                    # 经度循环
+                    jj = (j + dj) % nlon
+
+                    distance2 = di * di + dj * dj
+
+                    candidates.append(
+                        (distance2, ii, jj)
+                    )
 
             for _, ii, jj in sorted(candidates):
-                values = self.pft_data.get_cell(calendar_year, ii, jj)
-                normalized = self._normalize_pft_candidate(values)
+
+                values = self.pft_data.get_cell(
+                    calendar_year,
+                    ii,
+                    jj,
+                )
+
+                normalized = self._normalize_pft_candidate(
+                    values
+                )
+
                 if normalized is not None:
                     return normalized, (ii, jj)
 
         return None, None
 
-    def _get_cell_pft_grid(self, lat_idx: int, lon_idx: int, calendar_year: int) -> np.ndarray:
+    def _get_cell_pft_grid(
+        self,
+        lat_idx: int,
+        lon_idx: int,
+        calendar_year: int,
+    ) -> Optional[np.ndarray]:
+
         i, j = self._normalize_ij(lat_idx, lon_idx)
+
         cache_year = int(calendar_year) if self.pft_data.dynamic else -1
         cache_key = (cache_year, i, j)
+
         cached = self._pft_fallback_cache.get(cache_key)
         if cached is not None:
             return cached.copy()
 
         values = self.pft_data.get_cell(calendar_year, i, j)
         normalized = self._normalize_pft_candidate(values)
+
         if normalized is not None:
             return normalized
 
+        if self.pft_missing_cell_policy == "skip":
+
+            self._pft_skip_count += 1
+
+            if self._pft_skip_messages < 20:
+                lat = float(self._latitudes[i])
+                lon = float(self._longitudes[j])
+
+                print(
+                    "[PFT-SKIP] year={}, cell=({},{}), lat={}, lon={} "
+                    "has no valid PFT; carbon bookkeeping is skipped."
+                    .format(calendar_year, i, j, lat, lon),
+                    flush=True,
+                )
+
+                self._pft_skip_messages += 1
+
+            return None
+
         replacement = None
         source_cell = None
+
         if self.pft_missing_cell_policy == "nearest":
+
             replacement, source_cell = self._nearest_valid_pft_grid(
-                calendar_year, i, j
+                calendar_year,
+                i,
+                j,
             )
+
             if replacement is None:
                 replacement = self._default_pft_grid()
+
         elif self.pft_missing_cell_policy == "default":
+
             replacement = self._default_pft_grid()
 
         if replacement is None:
+
             lat = float(self._latitudes[i])
             lon = float(self._longitudes[j])
+
             raise ValueError(
                 "A simulated land cell has no valid PFT fraction: "
                 "year={}, cell=({},{}), lat={}, lon={}, policy={}. "
-                "For a legacy PFT mask, set pft.missing_cell_policy=nearest "
-                "and optionally pft.default_index in the run YAML."
+                "Use missing_cell_policy=skip to exclude the cell, "
+                "or configure nearest/default fallback explicitly."
                 .format(
-                    calendar_year, i, j, lat, lon, self.pft_missing_cell_policy
+                    calendar_year,
+                    i,
+                    j,
+                    lat,
+                    lon,
+                    self.pft_missing_cell_policy,
                 )
             )
 
         self._pft_fallback_cache[cache_key] = replacement.copy()
         self._pft_fallback_count += 1
+
         if self._pft_fallback_messages < 20:
+
             lat = float(self._latitudes[i])
             lon = float(self._longitudes[j])
+
             if source_cell is None:
-                detail = "default PFT {}".format(self.pft_default_index)
+                detail = "default PFT {}".format(
+                    self.pft_default_index
+                )
             else:
                 si, sj = source_cell
-                detail = "nearest valid cell ({},{}) at lat={}, lon={}".format(
-                    si, sj, float(self._latitudes[si]), float(self._longitudes[sj])
+                detail = (
+                    "nearest valid cell ({},{}) at lat={}, lon={}"
+                    .format(
+                        si,
+                        sj,
+                        float(self._latitudes[si]),
+                        float(self._longitudes[sj]),
+                    )
                 )
+
             print(
-                "[PFT-FALLBACK] year={}, cell=({},{}), lat={}, lon={} -> {}"
-                .format(calendar_year, i, j, lat, lon, detail),
+                "[PFT-FALLBACK] year={}, cell=({},{}), "
+                "lat={}, lon={} -> {}"
+                .format(
+                    calendar_year,
+                    i,
+                    j,
+                    lat,
+                    lon,
+                    detail,
+                ),
                 flush=True,
             )
+
             self._pft_fallback_messages += 1
 
         return replacement.copy()
@@ -794,7 +892,79 @@ class LULCCSimulator:
     def _empty_record() -> dict:
         record = {key: 0.0 for key in STATE_OUTPUT_KEYS + FORMAL_OUTPUT_KEYS}
         return record
+    def _build_pft_skip_records(
+        self,
+        *,
+        lat_idx: int,
+        lon_idx: int,
+        cell_area: float,
+    ):
+        yearly = [
+            self._empty_record()
+            for _ in range(self.n_steps + 1)
+        ]
 
+        # Mark this grid as PFT-skipped for every output year.
+        for record in yearly:
+            record["pft_skipped_cell"] = 1.0
+
+        for local_year_idx in range(self.n_steps):
+
+            output_idx = local_year_idx + 1
+
+            raw_transitions = self._parse_transitions(
+                local_year_idx,
+                lat_idx,
+                lon_idx,
+            )
+
+            for trans_key, trans_frac in raw_transitions.items():
+
+                src, dst = trans_key.split("_to_", 1)
+
+                area = float(trans_frac) * float(cell_area)
+
+                yearly[output_idx][
+                    "pft_skipped_transition_area"
+                ] += area
+
+                event_kind = _transition_event_kind(src, dst)
+
+                if event_kind == "clearing":
+                    yearly[output_idx][
+                        "pft_skipped_clearing_area"
+                    ] += area
+
+                elif event_kind == "abandonment":
+                    yearly[output_idx][
+                        "pft_skipped_abandonment_area"
+                    ] += area
+
+                elif event_kind == "other":
+                    yearly[output_idx][
+                        "pft_skipped_other_area"
+                    ] += area
+
+            wood_harvest = self._parse_wood_harvest(
+                local_year_idx,
+                lat_idx,
+                lon_idx,
+            )
+
+            harvest_area = 0.0
+
+            for harvest_input in wood_harvest.values():
+                harvest_area += (
+                    float(harvest_input.get("area_frac", 0.0))
+                    * float(cell_area)
+                )
+
+            yearly[output_idx][
+                "pft_skipped_harvest_area"
+            ] = harvest_area
+
+        return yearly
+        
     def run_simulation(self, lat_idx: int, lon_idx: int):
         cell_area = float(self._area_grid[lat_idx, lon_idx])
         LULC_frac = self._get_initial_fractions(lat_idx, lon_idx)
@@ -802,6 +972,12 @@ class LULCCSimulator:
             return [self._empty_record() for _ in range(self.n_steps + 1)]
 
         pft_grid = self._get_cell_pft_grid(lat_idx, lon_idx, self.start_year)
+        if pft_grid is None:
+            return self._build_pft_skip_records(
+                lat_idx=lat_idx,
+                lon_idx=lon_idx,
+                cell_area=cell_area,
+            )
         self.params.set_density_year(self.start_year)
         C_bar = initialize_Cbar(
             LULC_frac,
@@ -839,6 +1015,13 @@ class LULCCSimulator:
             diag["Carbon_Density_Adjustment"] = density_adjustment
 
             next_pft = self._get_cell_pft_grid(lat_idx, lon_idx, next_year)
+            if next_pft is None:
+                raise ValueError(
+                    "Dynamic PFT became missing after carbon bookkeeping had already "
+                    "started. This case cannot be safely handled by pft policy 'skip'. "
+                    "cell=({},{}), year={}"
+                    .format(lat_idx, lon_idx, next_year)
+                )
             if self.pft_data.dynamic and self.pft_update_mode == "annual_conservative":
                 pft_adjustment = self._conservative_pft_remap(
                     new_pft=next_pft,
@@ -1011,11 +1194,17 @@ class LULCCSimulator:
                 "area_deforestation", "transition_requested_area",
                 "transition_applied_area", "transition_clipped_area",
                 "harvest_luh2_area", "harvest_effective_area", "harvest_extra_area",
+                "pft_skipped_transition_area", "pft_skipped_clearing_area",
+                "pft_skipped_abandonment_area", "pft_skipped_other_area","pft_skipped_harvest_area",
             }
             for name in area_variables:
                 out_vars[name].units = self.area_unit
             out_vars["harvest_luh2_area_frac"].units = "1"
             out_vars["harvest_effective_area_frac"].units = "1"
+            out_vars["pft_skipped_cell"].units = "1"
+            out_vars["pft_skipped_cell"].long_name = (
+                "Grid cell excluded from carbon bookkeeping because no valid PFT is available"
+            )
             out_vars["Closure_Error"].long_name = (
                 "Change in total system carbon minus external carbon-density/PFT adjustments"
             )
