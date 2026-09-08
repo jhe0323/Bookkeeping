@@ -1,19 +1,24 @@
 #!/bin/bash
 set -euo pipefail
 
-# Clean model outputs generated under:
+# Clean LULCC model outputs generated under:
 #   Out_ncfile/<resolution>/<run.name>/
 #
 # Usage:
+#   bash server/clean_run.sh 025deg <run.name>
+#   bash server/clean_run.sh 1deg   <run.name>
+#   bash server/clean_run.sh all
+#
+# Examples:
+#   bash server/clean_run.sh 1deg baseline_1deg_area_pftfallback_v1
 #   bash server/clean_run.sh 025deg baseline_025deg_area
-#   bash server/clean_run.sh 1deg baseline_1deg_area
-#   bash server/clean_run.sh 1deg local_1deg_test
 #   bash server/clean_run.sh all
 #
 # Optional:
-#   CLEAN_LOGS=1 bash server/clean_run.sh 025deg baseline_025deg_area
+#   CLEAN_LOGS=1 bash server/clean_run.sh 1deg baseline_1deg_area_pftfallback_v1
+#   CLEAN_LOGS=1 bash server/clean_run.sh all
 #
-# CLEAN_LOGS=1 removes SLURM output/error logs after deleting the selected run.
+# CLEAN_LOGS=1 also removes LULCC DSUB stdout/stderr logs.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -34,9 +39,10 @@ usage() {
     echo "  bash server/clean_run.sh all"
     echo
     echo "Examples:"
+    echo "  bash server/clean_run.sh 1deg baseline_1deg_area_pftfallback_v1"
     echo "  bash server/clean_run.sh 025deg baseline_025deg_area"
-    echo "  bash server/clean_run.sh 1deg baseline_1deg_area"
-    echo "  CLEAN_LOGS=1 bash server/clean_run.sh 1deg baseline_1deg_area"
+    echo "  CLEAN_LOGS=1 bash server/clean_run.sh 1deg baseline_1deg_area_pftfallback_v1"
+    echo "  CLEAN_LOGS=1 bash server/clean_run.sh all"
 }
 
 
@@ -49,8 +55,10 @@ validate_run_name() {
         exit 2
     fi
 
-    # Prevent paths such as ../, /tmp/test, or nested directories.
-    if [[ "${name}" == "." || "${name}" == ".." || "${name}" == *"/"* ]]; then
+    # Prevent dangerous paths such as ../, /tmp/test, nested directories, etc.
+    if [[ "${name}" == "." || \
+          "${name}" == ".." || \
+          "${name}" == *"/"* ]]; then
         echo "Error: invalid run.name: ${name}" >&2
         exit 2
     fi
@@ -59,24 +67,28 @@ validate_run_name() {
 
 remove_logs() {
     if [[ "${CLEAN_LOGS}" != "1" ]]; then
-        return
+        echo "Removing all logs under ${PROJECT_DIR}/logs ..."
+        rm -f "${PROJECT_DIR}"/logs/*
     fi
 
     if [[ ! -d "${LOG_DIR}" ]]; then
-        echo "Log directory does not exist: ${LOG_DIR}"
+        echo "Log directory does not exist:"
+        echo "  ${LOG_DIR}"
         return
     fi
 
-    echo "Removing SLURM logs from:"
+    echo
+    echo "Removing LULCC DSUB logs from:"
     echo "  ${LOG_DIR}"
 
     find "${LOG_DIR}" -maxdepth 1 -type f \
         \( \
-            -name 'slurm_band_*.out' \
-            -o -name 'slurm_band_*.err' \
-            -o -name 'slurm-*.out' \
-            -o -name 'slurm-*.err' \
+            -name 'lulcc_*.out' \
+            -o -name 'lulcc_*.err' \
+            -o -name 'env_test_*.out' \
+            -o -name 'env_test_*.err' \
         \) \
+        -print \
         -delete
 }
 
@@ -86,6 +98,7 @@ case "${TARGET}" in
         validate_run_name "${RUN_NAME}"
 
         OUTPUT_TARGET="${OUT_ROOT}/${TARGET}/${RUN_NAME}"
+        EXPECTED_PARENT="${OUT_ROOT}/${TARGET}"
 
         echo "Selected run:"
         echo "  resolution : ${TARGET}"
@@ -93,6 +106,7 @@ case "${TARGET}" in
         echo "  directory  : ${OUTPUT_TARGET}"
 
         if [[ ! -d "${OUTPUT_TARGET}" ]]; then
+            echo
             echo "Run directory does not exist:"
             echo "  ${OUTPUT_TARGET}"
             exit 0
@@ -114,7 +128,8 @@ case "${TARGET}" in
         echo "  ${OUTPUT_TARGET}"
 
         if [[ "${CLEAN_LOGS}" == "1" ]]; then
-            echo "SLURM logs will also be removed from:"
+            echo
+            echo "LULCC DSUB logs will also be removed from:"
             echo "  ${LOG_DIR}"
         fi
         ;;
@@ -136,40 +151,54 @@ fi
 
 
 if [[ "${TARGET}" == "all" ]]; then
+
     if [[ -d "${OUT_ROOT}" ]]; then
-        find "${OUT_ROOT}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        find "${OUT_ROOT}" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            -exec rm -rf -- {} +
+
+        echo
         echo "Removed all model outputs under:"
         echo "  ${OUT_ROOT}"
     else
         echo "Output directory does not exist:"
         echo "  ${OUT_ROOT}"
     fi
-else
-    # Safety check: only permit deleting a direct child of
-    # Out_ncfile/<resolution>/.
-    EXPECTED_PARENT="${OUT_ROOT}/${TARGET}"
-    ACTUAL_PARENT="$(cd "$(dirname "${OUTPUT_TARGET}")" && pwd)"
 
-    if [[ "${ACTUAL_PARENT}" != "${EXPECTED_PARENT}" ]]; then
+else
+
+    # Safety check:
+    # OUTPUT_TARGET must be exactly one direct child below:
+    # Out_ncfile/<resolution>/
+
+    EXPECTED_PARENT_REAL="$(cd "${EXPECTED_PARENT}" && pwd)"
+    ACTUAL_PARENT_REAL="$(cd "$(dirname "${OUTPUT_TARGET}")" && pwd)"
+
+    if [[ "${ACTUAL_PARENT_REAL}" != "${EXPECTED_PARENT_REAL}" ]]; then
         echo "Safety check failed." >&2
-        echo "Expected parent: ${EXPECTED_PARENT}" >&2
-        echo "Actual parent:   ${ACTUAL_PARENT}" >&2
+        echo "Expected parent: ${EXPECTED_PARENT_REAL}" >&2
+        echo "Actual parent:   ${ACTUAL_PARENT_REAL}" >&2
         exit 1
     fi
 
     rm -rf -- "${OUTPUT_TARGET}"
 
+    echo
     echo "Removed run directory:"
     echo "  ${OUTPUT_TARGET}"
 
-    # Remove an empty resolution directory after the run is deleted.
+    # Remove empty resolution directory.
     if [[ -d "${EXPECTED_PARENT}" ]] && \
        [[ -z "$(find "${EXPECTED_PARENT}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
         rmdir "${EXPECTED_PARENT}"
+        echo "Removed empty resolution directory:"
+        echo "  ${EXPECTED_PARENT}"
     fi
 fi
 
 
 remove_logs
 
+echo
 echo "Cleanup complete."

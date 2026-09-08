@@ -1,19 +1,19 @@
 run:
-  name: baseline_025deg_area_pftfallback_v1
+  name: baseline_025deg_v1
   resolution: 025deg
-  input_format: original_luh2
+  input_format: vscp   #vscp or original_luh2
   input_base_year: 850
   start_year: 850
   end_year: 2020
   area_unit: ha
 
 paths:
-  data_dir: ../In_ncfile
-  output_dir: ../Out_ncfile
+  data_dir: /home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/In_ncfile
+  output_dir: /home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/Out_ncfile
 
 inputs:
-  states: states.nc
-  transitions: transitions.nc
+  states: synthetic_states_025deg.nc
+  transitions: synthetic_transitions_025deg.nc
   pft: IBIS_PFT_dominant_0.25deg.nc
   pft_variable: null
   time_encoding: index
@@ -34,7 +34,7 @@ pft:
   update_mode: annual_conservative
   min_year_policy: clip
   max_year_policy: clip
-  missing_cell_policy: nearest  # error, nearest, default, or skip
+  missing_cell_policy: skip
   nearest_search_radius: 12
   default_index: null
 

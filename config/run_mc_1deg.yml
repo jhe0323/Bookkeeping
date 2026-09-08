@@ -1,0 +1,103 @@
+run:
+  name: mc_1deg_static_v1
+  resolution: 1deg
+  input_format: original_luh2
+  input_base_year: 850
+  start_year: 850
+  end_year: 2020
+  area_unit: ha
+
+paths:
+  data_dir: ../In_ncfile
+  output_dir: ../Out_ncfile
+
+inputs:
+  states: states_1deg.nc
+  transitions: transitions_1deg.nc
+  pft: IBIS_PFT_dominant_1deg.nc
+  pft_variable: null
+  time_encoding: index
+
+parameters:
+  path: config/config.yml
+
+experiment:
+  path: config/experiments/harvest_area.yml
+
+# Keep static density for the first MC experiment. If transient carbon density
+# is studied later, sample the transient density dataset/multipliers explicitly
+# rather than perturbing carbon_density here while dynamic mode is active.
+model_overrides:
+  dynamic_carbon_density:
+    enabled: false
+
+pft:
+  base_year: 850
+  time_encoding: auto
+  update_mode: annual_conservative
+  min_year_policy: clip
+  max_year_policy: clip
+  missing_cell_policy: nearest
+  nearest_search_radius: 8
+  default_index: null
+
+validation:
+  # Validate global inputs once before the array job; do not rescan for every band.
+  run_before_simulation: false
+  full_scan: true
+
+output:
+  # These settings are retained for compatibility with ResolvedRunConfig.
+  # MC summary-only runs do not create the normal gridded NetCDF output.
+  filename_prefix: summary_1deg
+  compression_level: 4
+  sync_every: 200
+
+server:
+  band_size_deg: 10
+  stagger_max: 0
+
+monte_carlo:
+  name: mc_1deg_static_v1
+  sample_table: config/mc_samples.parquet
+  output_dir: ../Out_ncfile/MC
+
+  # Only spatially additive variables should be listed here. Dimensionless
+  # grid-cell fractions such as harvest_luh2_area_frac are intentionally omitted.
+  output_variables:
+    - Gross_Sources
+    - Gross_Sinks
+    - Net_Emissions
+    - Flux_Clearing
+    - Flux_Abandonment
+    - Flux_Harvest_Net
+    - Flux_Other
+    - Flux_Products_Total
+    - Flux_FD
+    - Flux_NFC
+    - Flux_FR
+    - Flux_NFR
+    - Flux_CAL
+    - Flux_WHp
+    - Closure_Error
+    - Atmosphere_Closure_Error
+    - Carbon_Density_Adjustment
+    - PFT_Remap_Adjustment
+    - biomass_total
+    - soil_total
+    - P1
+    - P10
+    - P100
+    - atmosphere
+    - system_carbon_total
+    - area_clearing
+    - area_abandonment
+    - area_other
+    - area_harvest
+    - area_deforestation
+    - transition_requested_area
+    - transition_applied_area
+    - transition_clipped_area
+    - harvest_luh2_area
+    - harvest_effective_area
+    - harvest_extra_area

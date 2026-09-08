@@ -1,0 +1,24 @@
+# SOFTWARE PIPELINE TEST ONLY -- NOT A SCIENTIFIC UNCERTAINTY DESIGN.
+monte_carlo:
+  run_config: config/run_mc_1deg.yml
+  output: config/mc_samples.parquet
+  n_samples: 2
+  seed: 20260831
+  include_baseline: true
+  scientific_ranges_confirmed: false
+
+parameters:
+  # Tiny +/-1% perturbation used only to verify that overrides propagate through
+  # ParameterLoader and produce distinct realizations.
+  - name: smoke_abandonment_timescale
+    enabled: true
+    targets:
+      - abandonment_param.PFT*.t_biomass
+      - abandonment_param.PFT*.t_soil
+    distribution: uniform_multiplier
+    low: 0.99
+    high: 1.01
+    scope: shared
+    value_lower: 0.0
+
+simplex_groups: []

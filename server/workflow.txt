@@ -1,0 +1,20 @@
+1. modify yml file
+	run name
+	inputs
+
+2. check run_1deg.sh
+
+3. delete old results
+	bash server/clean_run.sh\
+	1deg \
+	run.name
+
+4. submit simulation
+	source source.txt
+	dconfig
+	cd ~/LULCC/Code/server
+	./submit_1deg.sh 0 35
+
+5. merge files
+	run name
+	dsub -s "merge_1deg.sh" 
