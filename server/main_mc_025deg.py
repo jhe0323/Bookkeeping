@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""1-degree Monte Carlo summary-only server entry point."""
+"""0.25-degree Monte Carlo summary-only server entry point."""
 from pathlib import Path
 import os
 import sys
@@ -13,13 +13,13 @@ from src.mc_runner import run_mc_band  # noqa: E402
 RUN_CONFIG = Path(
     os.environ.get(
         "RUN_CONFIG",
-        str(CODE_DIR / "config" / "run_mc_1deg.yml"),
+        str(CODE_DIR / "config" / "run_mc_025deg.yml"),
     )
 ).resolve()
 
 if __name__ == "__main__":
     result = run_mc_band(
         RUN_CONFIG,
-        expected_resolution="1deg",
+        expected_resolution="025deg",
     )
     print("[DONE] {}".format(result))
