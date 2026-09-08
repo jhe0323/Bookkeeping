@@ -82,7 +82,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--spec",
-        default="config/mc_parameters.yml",
+        default="config/mc_parameters_1deg.yml",
         help="Monte Carlo sampling specification YAML.",
     )
     parser.add_argument(
