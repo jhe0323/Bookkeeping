@@ -1,9 +1,8 @@
 """Summary-only Monte Carlo runner for the Bookkeeping model.
 
-The existing deterministic grid-output path is left untouched.  This module
-reuses ``LULCCSimulator.run_simulation`` but accumulates each grid cell directly
-into a small annual band summary, avoiding the very large time x lat x lon
-NetCDF output for every Monte Carlo realization.
+Existing bands are reused only when sample, config, parameters, experiment,
+large-input fingerprints, and result-affecting Python source all match the
+current run. The code hash catches uncommitted local edits as well as commits.
 
 Python 3.8 compatible.
 """
@@ -14,62 +13,30 @@ import json
 import os
 from pathlib import Path
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
-from src.LULCCSimulator import (
-    FORMAL_OUTPUT_KEYS,
-    STATE_OUTPUT_KEYS,
-    LULCCSimulator,
-)
+from src.LULCCSimulator import FORMAL_OUTPUT_KEYS, STATE_OUTPUT_KEYS, LULCCSimulator
 from src.mc_sampling import canonical_json, deep_merge
 from src.run_config import build_run_metadata, load_run_config, sha256_file
 from src.run_manager import _band_slice
 
 
 DEFAULT_MC_OUTPUT_VARIABLES = [
-    # Main ELUC quantities
-    "Gross_Sources",
-    "Gross_Sinks",
-    "Net_Emissions",
-    "Flux_Clearing",
-    "Flux_Abandonment",
-    "Flux_Harvest_Net",
-    "Flux_Other",
-    "Flux_Products_Total",
-    "Flux_FD",
-    "Flux_NFC",
-    "Flux_FR",
-    "Flux_NFR",
-    "Flux_CAL",
-    "Flux_WHp",
-    # Carbon conservation / external adjustments
-    "Closure_Error",
-    "Atmosphere_Closure_Error",
-    "Carbon_Density_Adjustment",
-    "PFT_Remap_Adjustment",
-    # Global stock diagnostics
-    "biomass_total",
-    "soil_total",
-    "P1",
-    "P10",
-    "P100",
-    "atmosphere",
-    "system_carbon_total",
-    # Extensive area diagnostics (safe to sum spatially)
-    "area_clearing",
-    "area_abandonment",
-    "area_other",
-    "area_harvest",
-    "area_deforestation",
-    "transition_requested_area",
-    "transition_applied_area",
-    "transition_clipped_area",
-    "harvest_luh2_area",
-    "harvest_effective_area",
-    "harvest_extra_area",
+    "Gross_Sources", "Gross_Sinks", "Net_Emissions",
+    "Flux_Clearing", "Flux_Abandonment", "Flux_Harvest_Net", "Flux_Other",
+    "Flux_Products_Total", "Flux_FD", "Flux_NFC", "Flux_FR", "Flux_NFR",
+    "Flux_CAL", "Flux_WHp",
+    "Closure_Error", "Atmosphere_Closure_Error",
+    "Carbon_Density_Adjustment", "PFT_Remap_Adjustment",
+    "biomass_total", "soil_total", "P1", "P10", "P100",
+    "atmosphere", "system_carbon_total",
+    "area_clearing", "area_abandonment", "area_other", "area_harvest",
+    "area_deforestation", "transition_requested_area",
+    "transition_applied_area", "transition_clipped_area",
+    "harvest_luh2_area", "harvest_effective_area", "harvest_extra_area",
 ]
 
 _ALL_OUTPUT_KEYS = set(STATE_OUTPUT_KEYS + FORMAL_OUTPUT_KEYS)
@@ -77,6 +44,21 @@ _NON_ADDITIVE_DEFAULT_EXCLUSIONS = {
     "harvest_luh2_area_frac",
     "harvest_effective_area_frac",
 }
+
+_MODEL_CODE_FILES = (
+    "src/LULCCSimulator.py",
+    "src/parameter_loader.py",
+    "src/carbon_pools_init.py",
+    "src/events.py",
+    "src/harvest.py",
+    "src/transition.py",
+    "src/summary_yearly.py",
+    "src/file_loader.py",
+    "src/run_config.py",
+    "src/run_manager.py",
+    "src/mc_sampling.py",
+    "src/mc_runner.py",
+)
 
 
 def _resolve(repo_root: Path, value: Union[str, Path]) -> Path:
@@ -105,11 +87,11 @@ def mc_output_root(config) -> Path:
     section = mc_section(config)
     configured = section.get("output_dir")
     if configured:
-        root = _resolve(config.repo_root, configured)
+        out_root = _resolve(config.repo_root, configured)
     else:
-        root = config.output_root / "mc"
+        out_root = config.output_root / "mc"
     name = str(section.get("name", config.run_name))
-    return root / config.resolution / name
+    return out_root / config.resolution / name
 
 
 def sample_directory(config, sample_id: int) -> Path:
@@ -126,9 +108,32 @@ def global_output_path(config, sample_id: int) -> Path:
     return sample_directory(config, sample_id) / "global.parquet"
 
 
+def sample_manifest_path(config, sample_id: int) -> Path:
+    return sample_directory(config, sample_id) / "sample_manifest.json"
+
+
+def model_code_sha256(repo_root: Path) -> str:
+    digest = hashlib.sha256()
+    found = 0
+    for rel in _MODEL_CODE_FILES:
+        path = repo_root / rel
+        if not path.is_file():
+            continue
+        found += 1
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256_file(path).encode("ascii"))
+        digest.update(b"\0")
+    if found == 0:
+        raise RuntimeError("Could not hash model code under {}".format(repo_root))
+    return digest.hexdigest()
+
+
 def _load_sample_row(sample_table: Path, sample_id: int) -> Dict[str, Any]:
     if not sample_table.is_file():
-        raise FileNotFoundError("Monte Carlo sample table not found: {}".format(sample_table))
+        raise FileNotFoundError(
+            "Monte Carlo sample table not found: {}".format(sample_table)
+        )
     frame = pd.read_parquet(sample_table, engine="pyarrow")
     if "sample_id" not in frame.columns or "overrides_json" not in frame.columns:
         raise ValueError(
@@ -143,14 +148,15 @@ def _load_sample_row(sample_table: Path, sample_id: int) -> Dict[str, Any]:
                 sample_id, len(selected)
             )
         )
-    row = selected.iloc[0].to_dict()
-    return row
+    return selected.iloc[0].to_dict()
 
 
 def _output_variables(config) -> List[str]:
     section = mc_section(config)
-    variables = section.get("output_variables", DEFAULT_MC_OUTPUT_VARIABLES)
-    variables = [str(value) for value in variables]
+    variables = [
+        str(value)
+        for value in section.get("output_variables", DEFAULT_MC_OUTPUT_VARIABLES)
+    ]
     if not variables:
         raise ValueError("monte_carlo.output_variables cannot be empty")
     if len(set(variables)) != len(variables):
@@ -163,11 +169,40 @@ def _output_variables(config) -> List[str]:
     unsafe = [name for name in variables if name in _NON_ADDITIVE_DEFAULT_EXCLUSIONS]
     if unsafe and not bool(section.get("allow_nonadditive_variables", False)):
         raise ValueError(
-            "These variables are fractions and cannot be spatially summed safely: {}. "
-            "Remove them or explicitly set monte_carlo.allow_nonadditive_variables=true "
-            "and provide your own aggregation logic later.".format(unsafe)
+            "Non-additive fraction variables cannot be spatially summed: {}".format(
+                unsafe
+            )
         )
     return variables
+
+
+def current_mc_identity(
+    config,
+    sample_table_sha256: str,
+    override_sha256: str,
+) -> Dict[str, Any]:
+    # sample_table_sha256 and git_commit are stored as provenance but are not
+    # result-validity keys. This lets an ensemble be extended with new samples,
+    # or an identical working tree be committed, without invalidating unchanged
+    # sample results. The sample-specific override hash and direct code hash are
+    # the result-affecting identities.
+    base = build_run_metadata(config)
+    return {
+        "override_sha256": str(override_sha256),
+        "run_config_sha256": hashlib.sha256(
+            config.raw_text.encode("utf-8")
+        ).hexdigest(),
+        "model_code_sha256": model_code_sha256(config.repo_root),
+        "parameter_sha256": base.get("parameter_sha256"),
+        "experiment_sha256": base.get("experiment_sha256"),
+        "state_fingerprint": base.get("state_fingerprint"),
+        "transition_fingerprint": base.get("transition_fingerprint"),
+        "pft_fingerprint": base.get("pft_fingerprint"),
+    }
+
+
+def _same(a: Any, b: Any) -> bool:
+    return canonical_json(a) == canonical_json(b)
 
 
 def _completion_ok(
@@ -176,9 +211,7 @@ def _completion_ok(
     *,
     sample_id: int,
     band_id: int,
-    override_sha256: str,
-    run_config_sha256: str,
-    sample_table_sha256: str,
+    identity: Dict[str, Any],
     expected_years: Sequence[int],
     variables: Sequence[str],
 ) -> bool:
@@ -186,55 +219,52 @@ def _completion_ok(
         return False
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        checks = {
-            "sample_id": int(sample_id),
-            "band_id": int(band_id),
-            "override_sha256": str(override_sha256),
-            "run_config_sha256": str(run_config_sha256),
-            "sample_table_sha256": str(sample_table_sha256),
-        }
-        for key, expected in checks.items():
-            if metadata.get(key) != expected:
+        if int(metadata.get("sample_id", -1)) != int(sample_id):
+            return False
+        if int(metadata.get("band_id", -1)) != int(band_id):
+            return False
+
+        for key, expected in identity.items():
+            if not _same(metadata.get(key), expected):
                 return False
+
         if list(metadata.get("output_variables", [])) != list(variables):
             return False
 
         frame = pd.read_parquet(parquet_path, engine="pyarrow")
         if list(frame.columns) != ["year"] + list(variables):
             return False
-        years = frame["year"].to_numpy(dtype=int)
-        return np.array_equal(years, np.asarray(expected_years, dtype=int))
+        return np.array_equal(
+            frame["year"].to_numpy(dtype=int),
+            np.asarray(expected_years, dtype=int),
+        )
     except Exception:
         return False
 
 
 def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(
-        ".{}.{}.tmp.parquet".format(path.stem, os.getpid())
-    )
+    tmp = path.with_name(".{}.{}.tmp.parquet".format(path.stem, os.getpid()))
     try:
-        frame.to_parquet(temporary, index=False, engine="pyarrow")
-        os.replace(str(temporary), str(path))
+        frame.to_parquet(tmp, index=False, engine="pyarrow")
+        os.replace(str(tmp), str(path))
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        if tmp.exists():
+            tmp.unlink()
 
 
 def _atomic_json(data: Dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(
-        ".{}.{}.tmp.json".format(path.stem, os.getpid())
-    )
+    tmp = path.with_name(".{}.{}.tmp.json".format(path.stem, os.getpid()))
     try:
-        temporary.write_text(
+        tmp.write_text(
             json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True),
             encoding="utf-8",
         )
-        os.replace(str(temporary), str(path))
+        os.replace(str(tmp), str(path))
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        if tmp.exists():
+            tmp.unlink()
 
 
 def run_mc_band(
@@ -244,8 +274,9 @@ def run_mc_band(
     band_id: Optional[int] = None,
     expected_resolution: Optional[str] = None,
 ) -> Path:
-    """Run one ``sample_id x longitude-band`` Monte Carlo task."""
-    config = load_run_config(config_path, expected_resolution=expected_resolution)
+    config = load_run_config(
+        config_path, expected_resolution=expected_resolution
+    )
     if sample_id is None:
         sample_id = int(os.environ.get("MC_SAMPLE_ID", "0"))
     if band_id is None:
@@ -257,16 +288,19 @@ def run_mc_band(
         )
 
     sample_table = mc_sample_table_path(config)
-    sample_table_sha256 = sha256_file(sample_table)
+    sample_table_sha = sha256_file(sample_table)
     row = _load_sample_row(sample_table, sample_id)
+
     sample_overrides = json.loads(str(row["overrides_json"]))
     if not isinstance(sample_overrides, dict):
         raise ValueError("Sample overrides_json must decode to a mapping")
 
-    override_sha256 = str(
+    override_sha = str(
         row.get(
             "override_sha256",
-            hashlib.sha256(canonical_json(sample_overrides).encode("utf-8")).hexdigest(),
+            hashlib.sha256(
+                canonical_json(sample_overrides).encode("utf-8")
+            ).hexdigest(),
         )
     )
     sample_seed = int(row.get("sample_seed", -1))
@@ -279,22 +313,26 @@ def run_mc_band(
 
     lat_slice, lon_slice, bands_total = _band_slice(config, int(band_id))
     variables = _output_variables(config)
-    years = np.arange(config.start_year, config.end_year + 1, dtype=np.int32)
+    years = np.arange(
+        config.start_year, config.end_year + 1, dtype=np.int32
+    )
 
-    parquet_path, metadata_path = band_output_paths(config, sample_id, int(band_id))
-    run_config_sha256 = hashlib.sha256(config.raw_text.encode("utf-8")).hexdigest()
+    identity = current_mc_identity(config, sample_table_sha, override_sha)
+    base_metadata = build_run_metadata(config)
+    parquet_path, metadata_path = band_output_paths(
+        config, sample_id, int(band_id)
+    )
+
     if _completion_ok(
         parquet_path,
         metadata_path,
         sample_id=int(sample_id),
         band_id=int(band_id),
-        override_sha256=override_sha256,
-        run_config_sha256=run_config_sha256,
-        sample_table_sha256=sample_table_sha256,
+        identity=identity,
         expected_years=years,
         variables=variables,
     ):
-        print("[SKIP] complete MC band exists: {}".format(parquet_path))
+        print("[SKIP] complete and current MC band exists: {}".format(parquet_path))
         return parquet_path
 
     if parquet_path.exists():
@@ -302,7 +340,6 @@ def run_mc_band(
     if metadata_path.exists():
         metadata_path.unlink()
 
-    base_metadata = build_run_metadata(config)
     run_metadata = dict(base_metadata)
     run_metadata.update(
         {
@@ -310,9 +347,10 @@ def run_mc_band(
             "mc_sample_id": int(sample_id),
             "mc_sample_kind": sample_kind,
             "mc_sample_seed": sample_seed,
-            "mc_override_sha256": override_sha256,
+            "mc_override_sha256": override_sha,
             "mc_sample_table": str(sample_table),
-            "mc_sample_table_sha256": sample_table_sha256,
+            "mc_sample_table_sha256": sample_table_sha,
+            "mc_model_code_sha256": identity["model_code_sha256"],
             "band_id": int(band_id),
             "bands_total": int(bands_total),
             "band_size_deg": float(config.band_size_deg),
@@ -362,8 +400,7 @@ def run_mc_band(
     )
 
     nlat, nlon = simulator._area_grid.shape
-    nt = len(years)
-    totals = np.zeros((nt, len(variables)), dtype=np.float64)
+    totals = np.zeros((len(years), len(variables)), dtype=np.float64)
     total_cells = nlat * nlon
     completed = 0
     land_cells = 0
@@ -372,7 +409,6 @@ def run_mc_band(
     for i in range(nlat):
         for j in range(nlon):
             yearly = simulator.run_simulation(i, j)
-            # run_simulation returns all-zero records for non-land cells.
             nonzero_cell = False
             for t, record in enumerate(yearly):
                 values = [float(record.get(name, 0.0)) for name in variables]
@@ -381,11 +417,16 @@ def run_mc_band(
                     nonzero_cell = True
             if nonzero_cell:
                 land_cells += 1
+
             completed += 1
             if completed % 250 == 0 or completed == total_cells:
                 elapsed = max(time.time() - started, 1.0e-9)
                 rate = completed / elapsed
-                eta = (total_cells - completed) / rate if rate > 0.0 else 0.0
+                eta = (
+                    (total_cells - completed) / rate
+                    if rate > 0.0
+                    else 0.0
+                )
                 print(
                     "\r[MC band] {}/{} ({:.1f}%) ETA={:.2f}h".format(
                         completed,
@@ -403,15 +444,11 @@ def run_mc_band(
     _atomic_parquet(frame, parquet_path)
 
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": "summary_only",
         "sample_id": int(sample_id),
         "sample_kind": sample_kind,
         "sample_seed": sample_seed,
-        "override_sha256": override_sha256,
-        "run_config_sha256": run_config_sha256,
-        "sample_table": str(sample_table),
-        "sample_table_sha256": sample_table_sha256,
         "band_id": int(band_id),
         "bands_total": int(bands_total),
         "band_size_deg": float(config.band_size_deg),
@@ -423,13 +460,10 @@ def run_mc_band(
         "elapsed_seconds": float(time.time() - started),
         "parameter_overrides": parameter_overrides,
         "sample_overrides": sample_overrides,
+        "sample_table_sha256": sample_table_sha,
         "git_commit": base_metadata.get("git_commit", "unknown"),
-        "parameter_sha256": base_metadata.get("parameter_sha256"),
-        "experiment_sha256": base_metadata.get("experiment_sha256"),
-        "state_fingerprint": base_metadata.get("state_fingerprint"),
-        "transition_fingerprint": base_metadata.get("transition_fingerprint"),
-        "pft_fingerprint": base_metadata.get("pft_fingerprint"),
     }
+    metadata.update(identity)
     _atomic_json(metadata, metadata_path)
 
     print("[DONE] {}".format(parquet_path), flush=True)

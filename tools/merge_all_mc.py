@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge all completed Monte Carlo samples listed in the sample table."""
+"""Merge all completed MC samples listed in the selected sample table."""
 from __future__ import annotations
 
 import argparse
@@ -26,18 +26,22 @@ def main() -> None:
     parser.add_argument(
         "--skip-incomplete",
         action="store_true",
-        help="Continue past samples whose bands are not all complete.",
+        help="Continue past missing or stale samples.",
     )
     args = parser.parse_args()
 
-    config = load_run_config(args.config, expected_resolution="1deg")
-    sample_table = mc_sample_table_path(config)
-    samples = pd.read_parquet(sample_table, columns=["sample_id"], engine="pyarrow")
-    ids = sorted(int(value) for value in samples["sample_id"].tolist())
+    config = load_run_config(args.config)
+    samples = pd.read_parquet(
+        mc_sample_table_path(config),
+        columns=["sample_id"],
+        engine="pyarrow",
+    )
+    ids = sorted(int(v) for v in samples["sample_id"].tolist())
+
     if args.start is not None:
-        ids = [value for value in ids if value >= args.start]
+        ids = [v for v in ids if v >= args.start]
     if args.end is not None:
-        ids = [value for value in ids if value <= args.end]
+        ids = [v for v in ids if v <= args.end]
 
     failed = []
     for sample_id in ids:
@@ -46,14 +50,20 @@ def main() -> None:
         except Exception as exc:
             if not args.skip_incomplete:
                 raise
-            print("[INCOMPLETE] sample {}: {}".format(sample_id, exc))
+            print("[INCOMPLETE/STALE] sample {}: {}".format(sample_id, exc))
             failed.append(sample_id)
 
-    print("[DONE] requested={}, incomplete={}".format(len(ids), len(failed)))
+    print(
+        "[DONE] requested={}, incomplete_or_stale={}".format(
+            len(ids), len(failed)
+        )
+    )
     if failed:
-        print("[INFO] incomplete sample IDs: {}".format(
-            ",".join(str(value) for value in failed)
-        ))
+        print(
+            "[INFO] affected sample IDs: {}".format(
+                ",".join(str(v) for v in failed)
+            )
+        )
 
 
 if __name__ == "__main__":

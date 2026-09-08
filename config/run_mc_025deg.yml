@@ -1,6 +1,6 @@
 run:
-  name: mc_1deg_static_vscp_v1
-  resolution: 1deg
+  name: mc_025deg_static_vscp_v1
+  resolution: 025deg
   input_format: vscp
   input_base_year: 850
   start_year: 850
@@ -12,9 +12,9 @@ paths:
   output_dir: /home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/Out_ncfile
 
 inputs:
-  states: synthetic_states_1deg.nc
-  transitions: synthetic_transitions_1deg.nc
-  pft: IBIS_PFT_dominant_1deg.nc
+  states: synthetic_states_025deg.nc
+  transitions: synthetic_transitions_025deg.nc
+  pft: IBIS_PFT_dominant_0.25deg.nc
   pft_variable: null
   time_encoding: index
 
@@ -35,7 +35,7 @@ pft:
   min_year_policy: clip
   max_year_policy: clip
   missing_cell_policy: skip
-  nearest_search_radius: 8
+  nearest_search_radius: 12
   default_index: null
 
 validation:
@@ -43,17 +43,17 @@ validation:
   full_scan: true
 
 output:
-  filename_prefix: summary_1deg
+  filename_prefix: summary_025deg
   compression_level: 4
   sync_every: 200
 
 server:
-  band_size_deg: 10
+  band_size_deg: 3
   stagger_max: 0
 
 monte_carlo:
-  name: mc_1deg_static_vscp_v1
-  sample_table: config/mc_samples_1deg.parquet
+  name: mc_025deg_static_vscp_v1
+  sample_table: config/mc_samples_025deg.parquet
   output_dir: /home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/Out_ncfile/MC
   output_variables:
     - Gross_Sources

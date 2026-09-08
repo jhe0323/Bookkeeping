@@ -1,0 +1,165 @@
+# Literature-informed first-production Monte Carlo design.
+#
+# Bastos et al. (2021) identified carbon densities and carbon-allocation rules
+# as larger bookkeeping parameterisation sensitivities than response-time
+# constants. Gasser et al. (2020) found biogeochemical parameterisation
+# uncertainty of about 27-29% for LULCC emissions in their probabilistic setup.
+#
+# IMPORTANT: the exact CV/concentration values below are WORKING PRIORS. They
+# are not probability distributions directly reported by those studies.
+#
+# Design:
+# - shared family multipliers represent systematic parameter uncertainty and
+#   preserve the configured PFT ordering;
+# - structural zeros stay zero under multiplier sampling;
+# - beta distributions keep fractions in [0,1];
+# - Dirichlet/simplex sampling keeps allocation sums physical;
+# - use the same priors at 1deg and 0.25deg.
+
+monte_carlo:
+  run_config: config/run_mc_1deg.yml
+  output: config/mc_samples_1deg.parquet
+  n_samples: 500
+  seed: 20260908
+  include_baseline: true
+  scientific_ranges_confirmed: false
+
+parameters:
+  # A. Carbon densities -- highest priority
+  - name: biomass_density_natural
+    enabled: true
+    targets:
+      - carbon_density.PFT*.Biomass.v
+      - carbon_density.PFT*.Biomass.s
+    distribution: lognormal_multiplier
+    cv: 0.20
+    scope: shared
+    value_lower: 0.0
+
+  - name: biomass_density_managed
+    enabled: true
+    targets:
+      - carbon_density.PFT*.Biomass.c
+      - carbon_density.PFT*.Biomass.p
+    distribution: lognormal_multiplier
+    cv: 0.20
+    scope: shared
+    value_lower: 0.0
+
+  - name: soil_density_natural
+    enabled: true
+    targets:
+      - carbon_density.PFT*.Soil.v
+      - carbon_density.PFT*.Soil.s
+    distribution: lognormal_multiplier
+    cv: 0.15
+    scope: shared
+    value_lower: 0.0
+
+  - name: soil_density_managed
+    enabled: true
+    targets:
+      - carbon_density.PFT*.Soil.c
+      - carbon_density.PFT*.Soil.p
+    distribution: lognormal_multiplier
+    cv: 0.15
+    scope: shared
+    value_lower: 0.0
+
+  # B. Response / recovery times -- secondary priority
+  - name: clearing_response_time
+    enabled: true
+    targets:
+      - clearing_param.PFT*.t_lapse
+      - clearing_param.PFT*.t_rest
+    distribution: lognormal_multiplier
+    cv: 0.25
+    scope: shared
+    value_lower: 0.0
+
+  - name: abandonment_biomass_time
+    enabled: true
+    targets:
+      - abandonment_param.PFT*.t_biomass
+    distribution: lognormal_multiplier
+    cv: 0.25
+    scope: shared
+    value_lower: 0.0
+
+  - name: abandonment_soil_time
+    enabled: true
+    targets:
+      - abandonment_param.PFT*.t_soil
+    distribution: lognormal_multiplier
+    cv: 0.25
+    scope: shared
+    value_lower: 0.0
+
+  - name: harvest_response_time
+    enabled: true
+    targets:
+      - harvest_param.PFT*.t_lapse
+    distribution: lognormal_multiplier
+    cv: 0.25
+    scope: shared
+    value_lower: 0.0
+
+  - name: harvest_soc_min
+    enabled: true
+    targets:
+      - harvest_param.PFT*.SOC_min_v
+      - harvest_param.PFT*.SOC_min_s
+    distribution: lognormal_multiplier
+    cv: 0.15
+    scope: shared
+    value_lower: 0.0
+
+  # C. Fraction / fast-slow partitioning
+  - name: clearing_fast_fraction
+    enabled: true
+    targets:
+      - clearing_param.PFT*.f_v
+      - clearing_param.PFT*.f_s
+    distribution: beta_from_baseline
+    concentration: 40
+    scope: independent
+    lower: 0.0
+    upper: 1.0
+
+  - name: harvest_biomass_to_soil_fraction
+    enabled: true
+    targets:
+      - harvest_param.PFT*.Bio_Soil_v
+      - harvest_param.PFT*.Bio_Soil_s
+    distribution: beta_from_baseline
+    concentration: 40
+    scope: independent
+    lower: 0.0
+    upper: 1.0
+
+  - name: harvest_fast_fraction
+    enabled: true
+    targets:
+      - harvest_param.PFT*.f_v
+      - harvest_param.PFT*.f_s
+    distribution: beta_from_baseline
+    concentration: 40
+    scope: independent
+    lower: 0.0
+    upper: 1.0
+
+simplex_groups:
+  # D. Clearing and harvest allocation -- highest priority
+  - name: clearing_allocation
+    enabled: true
+    parent_pattern: clearing_param.PFT*
+    fields: [Prod_1, Prod_10, Prod_100, Bio_Soil]
+    concentration: 60
+    preserve_total: true
+
+  - name: harvest_product_split
+    enabled: true
+    parent_pattern: harvest_param.PFT*
+    fields: [Prod_1, Prod_10, Prod_100]
+    concentration: 60
+    preserve_total: true
