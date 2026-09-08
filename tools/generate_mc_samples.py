@@ -2,10 +2,8 @@
 """Generate reproducible Monte Carlo parameter realizations.
 
 The output Parquet file contains one row per realization with a nested override
-mapping serialized as JSON.  These overrides are consumed by ``src.mc_runner``.
-
-This script does not open the large LULCC NetCDF inputs, so samples can be
-prepared on a login node or workstation.
+mapping serialized as JSON. These overrides are consumed by ``src.mc_runner``.
+This script does not open the large LULCC NetCDF inputs.
 """
 from __future__ import annotations
 
@@ -82,7 +80,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--spec",
-        default="config/mc_parameters_1deg.yml",
+        required=True,
         help="Monte Carlo sampling specification YAML.",
     )
     parser.add_argument(
@@ -117,7 +115,9 @@ def main() -> None:
             "--allow-unconfirmed-ranges only for a pipeline smoke test."
         )
     if not _has_active_sampling(spec):
-        raise RuntimeError("No active Monte Carlo parameter or simplex rules were configured.")
+        raise RuntimeError(
+            "No active Monte Carlo parameter or simplex rules were configured."
+        )
 
     run_config_path = _resolve(
         repo_root,
@@ -129,17 +129,15 @@ def main() -> None:
         (baseline.get("dynamic_carbon_density", {}) or {}).get("enabled", False)
     )
     if dynamic_enabled:
-        target_text = canonical_json(
-            {
-                "parameters": spec.get("parameters", []),
-                "simplex_groups": spec.get("simplex_groups", []),
-            }
-        )
+        target_text = canonical_json({
+            "parameters": spec.get("parameters", []),
+            "simplex_groups": spec.get("simplex_groups", []),
+        })
         if "carbon_density" in target_text:
             raise RuntimeError(
-                "Static carbon_density is being sampled while dynamic carbon density is enabled. "
-                "Disable dynamic density for this MC design or implement a transient-density "
-                "multiplier experiment separately."
+                "Static carbon_density is being sampled while dynamic carbon "
+                "density is enabled. Disable dynamic density for this MC design "
+                "or implement a transient-density multiplier experiment separately."
             )
 
     output_path = _resolve(
@@ -149,27 +147,25 @@ def main() -> None:
     manifest_path = output_path.with_suffix(output_path.suffix + ".manifest.json")
     if (output_path.exists() or manifest_path.exists()) and not args.force:
         raise FileExistsError(
-            "Sample output already exists. Use --force to replace it: {}".format(output_path)
+            "Sample output already exists. Use --force to replace it: {}".format(
+                output_path
+            )
         )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    total_random = n_samples
     seed_sequence = np.random.SeedSequence(master_seed)
-    child_sequences = seed_sequence.spawn(total_random)
+    child_sequences = seed_sequence.spawn(n_samples)
 
     rows = []
     if include_baseline:
-        overrides = {}
-        rows.append(
-            {
-                "sample_id": 0,
-                "sample_kind": "baseline",
-                "sample_seed": -1,
-                "override_sha256": hashlib.sha256(b"{}").hexdigest(),
-                "overrides_json": "{}",
-                "draws_json": "{}",
-            }
-        )
+        rows.append({
+            "sample_id": 0,
+            "sample_kind": "baseline",
+            "sample_seed": -1,
+            "override_sha256": hashlib.sha256(b"{}").hexdigest(),
+            "overrides_json": "{}",
+            "draws_json": "{}",
+        })
         first_mc_id = 1
     else:
         first_mc_id = 0
@@ -184,18 +180,16 @@ def main() -> None:
             spec=spec,
         )
         overrides_json = canonical_json(overrides)
-        rows.append(
-            {
-                "sample_id": sample_id,
-                "sample_kind": "mc",
-                "sample_seed": sample_seed,
-                "override_sha256": hashlib.sha256(
-                    overrides_json.encode("utf-8")
-                ).hexdigest(),
-                "overrides_json": overrides_json,
-                "draws_json": canonical_json(draws),
-            }
-        )
+        rows.append({
+            "sample_id": sample_id,
+            "sample_kind": "mc",
+            "sample_seed": sample_seed,
+            "override_sha256": hashlib.sha256(
+                overrides_json.encode("utf-8")
+            ).hexdigest(),
+            "overrides_json": overrides_json,
+            "draws_json": canonical_json(draws),
+        })
 
     frame = pd.DataFrame(rows).sort_values("sample_id").reset_index(drop=True)
     frame.to_parquet(output_path, index=False, engine="pyarrow")
@@ -203,7 +197,9 @@ def main() -> None:
     manifest = {
         "schema_version": 1,
         "sampling_spec": str(spec_path),
-        "sampling_spec_sha256": hashlib.sha256(spec_text.encode("utf-8")).hexdigest(),
+        "sampling_spec_sha256": hashlib.sha256(
+            spec_text.encode("utf-8")
+        ).hexdigest(),
         "run_config": str(run_config_path),
         "n_random_samples": n_samples,
         "include_baseline": include_baseline,

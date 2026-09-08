@@ -39,6 +39,7 @@ fi
 # 0.25-degree rank files are merged directly on shared storage. The Python
 # tool streams time blocks and verifies every rank before producing the output.
 python -u "${CODE_DIR}/tools/merge_bands.py" \
+    --config "${CODE_DIR}/config/run_025deg.yml" \
     --pattern "${INPUT_DIR}/summary_025deg.rank*.nc" \
     --time-min 1850 \
     --time-block 32 \

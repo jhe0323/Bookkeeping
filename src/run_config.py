@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -29,6 +30,22 @@ _MODEL_RESULT_FILES = (
     "src/summary_yearly.py",
     "src/file_loader.py",
 )
+
+
+# Numerical setup logic that lives in orchestration/configuration modules.
+# Only these AST nodes/calls are hashed, so edits to logs/manifests/comments do
+# not invalidate numerical results, while changes to config interpretation,
+# band slicing, simulator construction, or the grid-run call do.
+_NUMERICAL_SETUP_AST_NODES = {
+    "src/run_config.py": ("ResolvedRunConfig", "load_run_config"),
+    "src/run_manager.py": ("_band_slice",),
+}
+_NUMERICAL_SETUP_CALLS = {
+    "src/run_manager.py": (
+        ("run_from_config", "LULCCSimulator"),
+        ("run_from_config", "run_simulation_grid"),
+    ),
+}
 
 
 @dataclass
@@ -294,6 +311,98 @@ def model_code_sha256(repo_root: Path, ref: Optional[str] = None) -> str:
     return digest.hexdigest()
 
 
+
+def _source_text(repo_root: Path, rel: str, ref: Optional[str] = None) -> str:
+    """Read one repository source file from the working tree or a Git ref."""
+    if ref is None:
+        path = repo_root / rel
+        if not path.is_file():
+            raise FileNotFoundError(f"Model source file not found: {path}")
+        return path.read_text(encoding="utf-8")
+    try:
+        content = subprocess.check_output(
+            ["git", "-C", str(repo_root), "show", f"{ref}:{rel}"],
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Cannot read {rel} at git ref {ref!r}") from exc
+    return content.decode("utf-8")
+
+
+def _find_top_level_ast_node(tree: ast.AST, name: str) -> ast.AST:
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name:
+                return node
+    raise RuntimeError(f"Could not find AST node {name!r}")
+
+
+def _find_function_call_ast(tree: ast.AST, function_name: str, call_name: str) -> ast.Call:
+    function = _find_top_level_ast_node(tree, function_name)
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == call_name:
+            return node
+        if isinstance(func, ast.Attribute) and func.attr == call_name:
+            return node
+    raise RuntimeError(
+        f"Could not find call {call_name!r} inside function {function_name!r}"
+    )
+
+
+def numerical_setup_sha256(repo_root: Path, ref: Optional[str] = None) -> str:
+    """Hash result-affecting setup logic without hashing provenance plumbing.
+
+    This supplements ``model_code_sha256``. It catches changes in:
+    - run-YAML interpretation and resolved numerical fields;
+    - longitude-band slicing;
+    - arguments passed to ``LULCCSimulator``;
+    - the grid simulation call.
+
+    When ``ref`` is supplied, the same AST fragments are reconstructed from the
+    historical Git commit. This allows existing manifests to be migrated
+    conservatively without forcing a rerun after provenance-only maintenance.
+    """
+    digest = hashlib.sha256()
+    parsed: Dict[str, ast.AST] = {}
+
+    files = sorted(
+        set(_NUMERICAL_SETUP_AST_NODES) | set(_NUMERICAL_SETUP_CALLS)
+    )
+    for rel in files:
+        source = _source_text(repo_root, rel, ref=ref)
+        parsed[rel] = ast.parse(source, filename=rel)
+
+    for rel in sorted(_NUMERICAL_SETUP_AST_NODES):
+        tree = parsed[rel]
+        for node_name in _NUMERICAL_SETUP_AST_NODES[rel]:
+            node = _find_top_level_ast_node(tree, node_name)
+            payload = ast.dump(node, annotate_fields=True, include_attributes=False)
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0node\0")
+            digest.update(node_name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(payload.encode("utf-8"))
+            digest.update(b"\0")
+
+    for rel in sorted(_NUMERICAL_SETUP_CALLS):
+        tree = parsed[rel]
+        for function_name, call_name in _NUMERICAL_SETUP_CALLS[rel]:
+            node = _find_function_call_ast(tree, function_name, call_name)
+            payload = ast.dump(node, annotate_fields=True, include_attributes=False)
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0call\0")
+            digest.update(function_name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(call_name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(payload.encode("utf-8"))
+            digest.update(b"\0")
+
+    return digest.hexdigest()
+
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     merged = deepcopy(base)
     for key, value in override.items():
@@ -365,6 +474,7 @@ def build_run_metadata(config: ResolvedRunConfig) -> Dict[str, Any]:
         "parameter_sha256": sha256_file(config.base_parameter_path),
         "experiment_sha256": sha256_file(config.experiment_path),
         "model_code_sha256": model_code_sha256(config.repo_root),
+        "numerical_setup_sha256": numerical_setup_sha256(config.repo_root),
         # Git commit remains provenance only; it is intentionally not an identity key.
         "git_commit": git_commit(config.repo_root),
         "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -410,6 +520,7 @@ def manifest_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "parameter_sha256",
         "experiment_sha256",
         "model_code_sha256",
+        "numerical_setup_sha256",
         "dynamic_density_file",
         "dynamic_density_fingerprint",
     )
@@ -467,6 +578,20 @@ def metadata_identity_matches(
                 return False
             try:
                 legacy_hash = model_code_sha256(repo_root, ref=legacy_commit)
+            except Exception:
+                return False
+            if legacy_hash == str(expected_value):
+                continue
+            return False
+
+        if key == "numerical_setup_sha256" and existing_value is None:
+            if repo_root is None:
+                return False
+            legacy_commit = str(existing.get("git_commit", "")).strip()
+            if not legacy_commit or legacy_commit == "unknown":
+                return False
+            try:
+                legacy_hash = numerical_setup_sha256(repo_root, ref=legacy_commit)
             except Exception:
                 return False
             if legacy_hash == str(expected_value):

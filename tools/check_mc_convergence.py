@@ -81,6 +81,17 @@ def _parse_sizes(text: str, n_total: int) -> List[int]:
 
 
 def _validate_summary_identity(config, meta: Dict[str, Any], frame: pd.DataFrame) -> None:
+    missing = meta.get("missing_sample_ids", []) or []
+    stale = meta.get("stale_sample_ids", {}) or {}
+    if missing or stale:
+        raise RuntimeError(
+            "Convergence analysis requires a complete current ensemble. "
+            "ensemble_summary.json reports missing={} stale={}. "
+            "Finish/merge all intended realizations and run tools.summarize_mc "
+            "again WITHOUT --allow-missing before checking convergence."
+            .format(len(missing), len(stale))
+        )
+
     sample_table = mc_sample_table_path(config)
     if not sample_table.is_file():
         raise FileNotFoundError("MC sample table not found: {}".format(sample_table))

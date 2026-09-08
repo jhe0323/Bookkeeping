@@ -20,10 +20,21 @@ from datetime import datetime, timezone
 import glob
 import json
 from pathlib import Path
+import sys
 from typing import Any, Dict, List, Sequence, Tuple
 
 import netCDF4 as nc
 import numpy as np
+
+CODE_DIR = Path(__file__).resolve().parent.parent
+if str(CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(CODE_DIR))
+
+from src.run_config import (  # noqa: E402
+    build_run_metadata,
+    load_run_config,
+    metadata_identity_matches,
+)
 
 
 IDENTITY_ATTRS = (
@@ -107,7 +118,7 @@ def _variable_schema(ds: nc.Dataset) -> Dict[str, Tuple[str, Tuple[str, ...]]]:
     }
 
 
-def _inspect_bands(paths: Sequence[Path]):
+def _inspect_bands(paths: Sequence[Path], *, expected_metadata=None, repo_root=None):
     if not paths:
         raise FileNotFoundError("No band files matched the pattern")
 
@@ -130,6 +141,21 @@ def _inspect_bands(paths: Sequence[Path]):
             lon = _wrap_lon(lon_raw)
             schema = _variable_schema(ds)
             meta = _critical_metadata(ds)
+
+            if expected_metadata is not None:
+                existing_metadata = {
+                    key: ds.getncattr(key)
+                    for key in ds.ncattrs()
+                }
+                if not metadata_identity_matches(
+                    existing_metadata,
+                    expected_metadata,
+                    repo_root=repo_root,
+                ):
+                    raise RuntimeError(
+                        "Band is complete but stale relative to the current "
+                        "run configuration/model identity: {}".format(path)
+                    )
 
             if ref_time is None:
                 ref_time = time
@@ -228,9 +254,16 @@ def merge_bands(
     time_block: int,
     compression: int,
     overwrite: bool,
+    config_path: Path,
 ) -> Path:
+    config = load_run_config(config_path)
+    expected_metadata = build_run_metadata(config)
     paths = [Path(value).resolve() for value in sorted(glob.glob(pattern))]
-    records, full_time, lat, lon, _schema = _inspect_bands(paths)
+    records, full_time, lat, lon, _schema = _inspect_bands(
+        paths,
+        expected_metadata=expected_metadata,
+        repo_root=config.repo_root,
+    )
 
     time_values = np.asarray(full_time)
     selected_idx = np.flatnonzero(time_values >= int(time_min))
@@ -338,6 +371,11 @@ def merge_bands(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pattern", required=True)
+    parser.add_argument(
+        "--config",
+        required=True,
+        help="Current deterministic run YAML used to validate every band.",
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--time-min", type=int, default=1850)
     parser.add_argument("--time-block", type=int, default=32)
@@ -354,6 +392,7 @@ def main() -> None:
         time_block=args.time_block,
         compression=args.compression,
         overwrite=args.overwrite,
+        config_path=Path(args.config),
     )
 
 

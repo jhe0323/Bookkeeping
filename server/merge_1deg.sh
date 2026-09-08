@@ -48,6 +48,7 @@ cp "${INPUT_DIR}"/summary_1deg.rank*.nc "${TMP_WORK}/"
 
 LOCAL_OUTPUT=${TMP_WORK}/summary_1deg.global_time_ge1850.nc
 python -u "${CODE_DIR}/tools/merge_bands.py" \
+    --config "${CODE_DIR}/config/run_1deg.yml" \
     --pattern "${TMP_WORK}/summary_1deg.rank*.nc" \
     --time-min 1850 \
     --time-block 32 \

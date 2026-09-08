@@ -865,13 +865,14 @@ Bookkeeping/
     ├── check_pft_land_overlap.py
     ├── generate_mc_samples.py
     ├── validate_mc_band.py
+    ├── merge_bands.py
     ├── merge_mc_bands.py
     ├── merge_all_mc.py
     ├── summarize_mc.py
     └── check_mc_convergence.py
 ```
 
-Legacy SLURM `.sbatch` files, if retained in the repository, are not part of the current DSUB production workflow.
+																												  
 
 ### Main modules
 
@@ -934,8 +935,8 @@ netCDF4
 PyYAML
 pandas
 pyarrow
-xarray
-scipy
+	  
+	 
 ```
 
 `pandas` and `pyarrow` are required by the Monte Carlo workflow and by transient carbon-density input.
@@ -1225,7 +1226,8 @@ The NetCDF file records model provenance and runtime metadata, including:
 - area and carbon units;
 - run-configuration hash;
 - parameter and experiment hashes;
-- Git commit;
+- model-code hash and numerical-setup hash;
+- Git commit (provenance only);
 - full run YAML;
 - band ID and band size for server runs.
 
@@ -1432,7 +1434,9 @@ g C m^-2 yr^-1
 8. Inspect Closure_Error, transition_clipped_area and harvest diagnostics.
 9. Submit all longitude bands.
 10. Check all bands before merging outputs.
-11. Merge or summarize the deterministic result.
+11. Merge with `tools/merge_bands.py`; the merger verifies every band against
+    the current run YAML/model identity before writing the global file.
+12. Summarize or analyze the deterministic result.
 ```
 
 ---
@@ -1529,8 +1533,9 @@ The first production MC design prioritizes carbon density and carbon allocation,
 |---|---|---|
 | Natural biomass density (`v`,`s`) | shared lognormal multiplier | CV = 20% |
 | Managed biomass density (`c`,`p`) | shared lognormal multiplier | CV = 20% |
-| Natural soil density (`v`,`s`) + harvest `SOC_min_v/s` | shared lognormal multiplier | CV = 15% |
+| Natural soil density (`v`,`s`) | shared lognormal multiplier | CV = 15% |
 | Managed soil density (`c`,`p`) | shared lognormal multiplier | CV = 15% |
+| Harvest `SOC_min_v/s` | shared lognormal multiplier | CV = 15% |
 | Clearing response time | shared lognormal multiplier | CV = 25% |
 | Abandonment biomass time | shared lognormal multiplier | CV = 25% |
 | Abandonment soil time | shared lognormal multiplier | CV = 25% |
@@ -1551,41 +1556,46 @@ until the uncertainty design has been reviewed. Change it to `true` only for the
 
 Use the same priors at 1° and 0.25° so spatial resolution is not confounded with a different parameter distribution.
 
-### 22.4 Coupling `SOC_min` to equilibrium soil density
+### 22.4 Harvest `SOC_min` treatment
 
-`SOC_min_v` and `SOC_min_s` are absolute soil-carbon-density floors used during harvest disturbance.
+`SOC_min_v` and `SOC_min_s` are absolute soil-carbon-density floors used in the
+current harvest disturbance formulation. They are sampled independently from
+equilibrium natural-soil density using a shared PFT-family multiplier.
 
-If equilibrium soil density and `SOC_min` were sampled independently, some realizations could generate:
-
-```text
-SOC_min > equilibrium Soil
-```
-
-which would suppress modeled harvest soil loss.
-
-Therefore the production parameter design applies the same shared random multiplier to:
+The validator requires:
 
 ```text
-carbon_density.PFT*.Soil.v
-carbon_density.PFT*.Soil.s
-harvest_param.PFT*.SOC_min_v
-harvest_param.PFT*.SOC_min_s
+SOC_min_v >= 0
+SOC_min_s >= 0
 ```
 
-This preserves the configured ratio:
+but deliberately does **not** require:
+
+																					   
 
 ```text
-SOC_min / equilibrium Soil
+SOC_min <= equilibrium Soil
+						  
+							
+							
 ```
 
-within every realization.
+because the deterministic baseline contains valid cases with a higher
+`SOC_min`, and the numerical harvest formulation safely evaluates soil transfer
+as `max(0, current_soil - SOC_min)`.
 
-The MC parameter validator should additionally enforce:
+	   
+						  
+   
 
-```text
-SOC_min_v <= Soil.v
-SOC_min_s <= Soil.s
-```
+						 
+
+													   
+
+	   
+				   
+				   
+   
 
 ### 22.5 Syntax check
 
@@ -1931,6 +1941,10 @@ net_emissions_samples.parquet
 The largest completed ensemble is used as a reference distribution only.
 
 It must not be allowed to demonstrate convergence by comparing against itself.
+Convergence analysis also requires a **complete current ensemble**:
+`ensemble_summary.json` must contain no missing or stale sample IDs. Interim
+summaries created with `summarize_mc --allow-missing` are therefore not accepted
+for a formal convergence decision.
 
 For example, with 500 completed random realizations, test only candidate sizes smaller than 500:
 
