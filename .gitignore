@@ -1,10 +1,7 @@
-# ----------------------------------------------------------------------
 # Python bytecode and caches
-# ----------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
-
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -14,47 +11,33 @@ __pycache__/
 .coverage.*
 htmlcov/
 
-# ----------------------------------------------------------------------
 # Virtual environments and package/build outputs
-# ----------------------------------------------------------------------
 .venv/
 venv/
 env/
 ENV/
-
 build/
 dist/
 *.egg-info/
 .eggs/
 pip-wheel-metadata/
 
-# ----------------------------------------------------------------------
 # Editors and IDEs
-# ----------------------------------------------------------------------
 .vscode/
 .idea/
 *.code-workspace
 
-# ----------------------------------------------------------------------
 # Jupyter
-# ----------------------------------------------------------------------
 .ipynb_checkpoints/
 
-# ----------------------------------------------------------------------
 # Operating-system files
-# ----------------------------------------------------------------------
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# ----------------------------------------------------------------------
 # Model input and output directories
-# These names match src/main.py
-# ----------------------------------------------------------------------
 /In_ncfile/
 /Out_ncfile/
-
-# Legacy or alternative local input/output directory names
 /in_file/
 /out_file/
 /input/
@@ -63,9 +46,7 @@ desktop.ini
 /outputs/
 /results/
 
-# ----------------------------------------------------------------------
 # Runtime logs, temporary files, and scheduler outputs
-# ----------------------------------------------------------------------
 /logs/
 *.log
 *.tmp
@@ -74,30 +55,32 @@ desktop.ini
 *.swp
 *.swo
 *~
-
 slurm-*.out
 slurm-*.err
 *.out
 *.err
 
-# ----------------------------------------------------------------------
+# Generated DSUB scripts (templates remain tracked)
+/server/generated_1deg/
+/server/generated_025deg/
+/server/generated_mc_1deg/
+/server/generated_mc_025deg/
+
 # Local test/run products
-# ----------------------------------------------------------------------
 summary*.nc
 summary*.csv
 diagnostic*.csv
 closure*.csv
 
-# ----------------------------------------------------------------------
+# Generated Monte Carlo sample tables/manifests
+/config/mc_samples_*.parquet
+/config/mc_samples_*.parquet.manifest.json
+
 # Local configuration overrides and secrets
-# Keep shared files under config/ tracked.
-# ----------------------------------------------------------------------
 .env
 .env.*
 config/local.yml
 config/local.yaml
 
-# ----------------------------------------------------------------------
 # Microsoft Office temporary files
-# ----------------------------------------------------------------------
 ~$*

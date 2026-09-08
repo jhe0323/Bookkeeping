@@ -189,15 +189,17 @@ def current_mc_identity(
     base = build_run_metadata(config)
     return {
         "override_sha256": str(override_sha256),
-        "run_config_sha256": hashlib.sha256(
-            config.raw_text.encode("utf-8")
-        ).hexdigest(),
+        # Reuse the semantic YAML hash produced by build_run_metadata so
+        # comments/formatting changes do not invalidate MC results.
+        "run_config_sha256": base.get("run_config_sha256"),
         "model_code_sha256": model_code_sha256(config.repo_root),
         "parameter_sha256": base.get("parameter_sha256"),
         "experiment_sha256": base.get("experiment_sha256"),
         "state_fingerprint": base.get("state_fingerprint"),
         "transition_fingerprint": base.get("transition_fingerprint"),
         "pft_fingerprint": base.get("pft_fingerprint"),
+        "dynamic_density_file": base.get("dynamic_density_file"),
+        "dynamic_density_fingerprint": base.get("dynamic_density_fingerprint"),
     }
 
 

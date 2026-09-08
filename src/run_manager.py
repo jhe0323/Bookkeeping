@@ -17,14 +17,13 @@ from src.input_validator import validate_inputs
 from src.run_config import (
     build_run_metadata,
     load_run_config,
-    manifest_identity,
+    metadata_identity_matches,
     write_run_manifest,
 )
 
 
 def _canonical_metadata_value(value: Any) -> str:
     """Normalize Python and NetCDF attribute values for stable comparison."""
-
     if isinstance(value, bytes):
         value = value.decode("utf-8", errors="replace")
     if isinstance(value, np.generic):
@@ -51,6 +50,8 @@ def output_complete(
     expected_lat: int,
     expected_lon: int,
     expected_metadata: Optional[Dict[str, Any]] = None,
+    *,
+    repo_root: Optional[Path] = None,
 ) -> bool:
     if not path.exists():
         return False
@@ -61,12 +62,21 @@ def output_complete(
                 return False
 
             if expected_metadata is not None:
-                for key, expected in manifest_identity(expected_metadata).items():
-                    if key not in ds.ncattrs():
-                        return False
-                    actual_value = ds.getncattr(key)
-                    if _canonical_metadata_value(actual_value) != _canonical_metadata_value(expected):
-                        return False
+                existing_metadata: Dict[str, Any] = {}
+                for key in ds.ncattrs():
+                    value = ds.getncattr(key)
+                    if isinstance(value, np.generic):
+                        value = value.item()
+                    if isinstance(value, bytes):
+                        value = value.decode("utf-8", errors="replace")
+                    existing_metadata[key] = value
+
+                if not metadata_identity_matches(
+                    existing_metadata,
+                    expected_metadata,
+                    repo_root=repo_root,
+                ):
+                    return False
 
             if "done" not in ds.variables:
                 return False
@@ -86,8 +96,6 @@ _RUNTIME_METADATA_KEYS = (
 
 
 def _read_runtime_metadata(path: Path) -> Dict[str, Any]:
-    """Read runtime-resolved metadata from an existing NetCDF output."""
-
     runtime: Dict[str, Any] = {}
     try:
         with nc.Dataset(path, "r") as ds:
@@ -113,8 +121,6 @@ def _persist_runtime_manifests(
     server_mode: bool,
     band_id: Optional[int],
 ) -> None:
-    """Persist runtime-resolved metadata without shared-file write races."""
-
     if server_mode:
         if band_id is None:
             raise ValueError("band_id is required in server mode")
@@ -156,7 +162,9 @@ def _band_slice(config, band_id: int):
         raise ValueError(
             f"Longitude grid is not global/regular: nlon={nlon}, expected={expected_nlon}"
         )
-    if config.band_size_deg <= 0 or abs(360.0 / config.band_size_deg - round(360.0 / config.band_size_deg)) > 1e-8:
+    if config.band_size_deg <= 0 or abs(
+        360.0 / config.band_size_deg - round(360.0 / config.band_size_deg)
+    ) > 1e-8:
         raise ValueError(f"server.band_size_deg must divide 360: {config.band_size_deg}")
     bands_total = int(round(360.0 / config.band_size_deg))
     if not (0 <= band_id < bands_total):
@@ -187,11 +195,10 @@ def run_from_config(
 
     if config.validate_before_run and server_mode:
         raise RuntimeError(
-            "Automatic full input validation is disabled for server array jobs "
+            "Automatic full input validation is disabled for server band jobs "
             "because every band would otherwise rescan the same global inputs. "
-            "Run `python3 -m tools.validate_inputs` once before sbatch, confirm "
-            "PASS, and set validation.run_before_simulation=false in the server "
-            "run YAML."
+            "Run `python -m tools.validate_inputs` once before submission, confirm "
+            "PASS, and set validation.run_before_simulation=false in the server YAML."
         )
 
     if server_mode:
@@ -203,12 +210,14 @@ def run_from_config(
             time.sleep(delay)
         lat_slice, lon_slice, bands_total = _band_slice(config, band_id)
         output_path = output_dir / f"{config.output_prefix}.rank{band_id:03d}.nc"
-        metadata.update({
-            "server_mode": 1,
-            "band_id": band_id,
-            "bands_total": bands_total,
-            "band_size_deg": config.band_size_deg,
-        })
+        metadata.update(
+            {
+                "server_mode": 1,
+                "band_id": band_id,
+                "bands_total": bands_total,
+                "band_size_deg": config.band_size_deg,
+            }
+        )
     else:
         band_id = None
         lat_slice = None
@@ -229,7 +238,6 @@ def run_from_config(
             )
 
     if server_mode:
-        # Shared manifest: common information for the complete global run.
         write_run_manifest(
             config,
             output_dir,
@@ -237,8 +245,6 @@ def run_from_config(
             manifest_name="run_manifest.json",
             overwrite_manifest=False,
         )
-
-        # Band-specific manifest: no shared-file overwrite between array tasks.
         write_run_manifest(
             config,
             output_dir,
@@ -247,7 +253,6 @@ def run_from_config(
             overwrite_manifest=True,
         )
     else:
-        # Verify an existing local run before deciding whether output can be reused.
         write_run_manifest(
             config,
             output_dir,
@@ -267,9 +272,8 @@ def run_from_config(
         expected_lat,
         expected_lon,
         expected_metadata=base_metadata,
+        repo_root=config.repo_root,
     ):
-        # Backfill runtime metadata from the completed NetCDF when an existing
-        # run is skipped, so manifests remain complete without reloading inputs.
         existing_runtime_metadata = dict(metadata)
         existing_runtime_metadata.update(_read_runtime_metadata(output_path))
         _persist_runtime_manifests(
@@ -282,8 +286,9 @@ def run_from_config(
         )
         print(f"[SKIP] complete output exists: {output_path}")
         return output_path
+
     if output_path.exists():
-        print(f"[RESTART] removing incomplete output: {output_path}")
+        print(f"[RESTART] removing incomplete/stale output: {output_path}")
         output_path.unlink()
 
     print(
@@ -292,6 +297,7 @@ def run_from_config(
         f"band={band_id if band_id is not None else 'global'}",
         flush=True,
     )
+
     simulator = LULCCSimulator(
         config_path=str(config.base_parameter_path),
         experiment_path=str(config.experiment_path),
@@ -320,9 +326,6 @@ def run_from_config(
         compression_level=config.compression_level,
     )
 
-    # The simulator adds runtime-resolved information such as the actual PFT
-    # variable, PFT layout, and compiled channel counts. Persist those values
-    # after initialization instead of leaving them only in NetCDF attributes.
     runtime_metadata = dict(simulator.run_metadata)
     _persist_runtime_manifests(
         config=config,
@@ -339,12 +342,14 @@ def run_from_config(
         lon_slice=None,
         sync_every=config.sync_every,
     )
+
     if not output_complete(
         output_path,
         expected_time,
         expected_lat,
         expected_lon,
         expected_metadata=base_metadata,
+        repo_root=config.repo_root,
     ):
         raise RuntimeError(f"Output failed completion check: {output_path}")
     return output_path

@@ -15,6 +15,22 @@ from typing import Any, Dict, Optional, Union
 import yaml
 
 
+# Files whose contents can change deterministic numerical results.
+# Deliberately excludes README, scheduler scripts, MC-only code, and run
+# orchestration/manifest code so non-numerical maintenance does not invalidate
+# already-computed deterministic outputs.
+_MODEL_RESULT_FILES = (
+    "src/LULCCSimulator.py",
+    "src/parameter_loader.py",
+    "src/carbon_pools_init.py",
+    "src/events.py",
+    "src/harvest.py",
+    "src/transition.py",
+    "src/summary_yearly.py",
+    "src/file_loader.py",
+)
+
+
 @dataclass
 class ResolvedRunConfig:
     config_path: Path
@@ -69,11 +85,34 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     return data
 
 
+def _load_yaml_text(text: str) -> Dict[str, Any]:
+    data = yaml.safe_load(text) or {}
+    if not isinstance(data, dict):
+        raise ValueError("Top-level YAML text must be a mapping")
+    return data
+
+
 def _resolve(repo_root: Path, value: Union[str, Path]) -> Path:
     path = Path(value)
     if not path.is_absolute():
         path = repo_root / path
     return path.resolve()
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def semantic_yaml_sha256(text: str) -> str:
+    """Hash YAML meaning rather than comments/spacing/key order."""
+    parsed = _load_yaml_text(text)
+    return hashlib.sha256(_canonical_json(parsed).encode("utf-8")).hexdigest()
 
 
 def load_run_config(
@@ -186,14 +225,7 @@ def sha256_file(path: Path) -> str:
 
 
 def file_fingerprint(path: Path, sample_bytes: int = 1024 * 1024) -> Dict[str, Any]:
-    """Return a fast fingerprint for a potentially large input file.
-
-    The fingerprint combines file size, nanosecond modification time, and a
-    SHA-256 digest of the first and last sample blocks. It is intentionally
-    much cheaper than hashing an entire multi-gigabyte NetCDF file while still
-    detecting normal same-name input replacements.
-    """
-
+    """Return a fast fingerprint for a potentially large input file."""
     resolved = path.resolve()
     stat = resolved.stat()
     size_bytes = int(stat.st_size)
@@ -202,8 +234,7 @@ def file_fingerprint(path: Path, sample_bytes: int = 1024 * 1024) -> Dict[str, A
     digest = hashlib.sha256()
     digest.update(str(size_bytes).encode("ascii"))
     with resolved.open("rb") as handle:
-        first = handle.read(sample_bytes)
-        digest.update(first)
+        digest.update(handle.read(sample_bytes))
         if size_bytes > sample_bytes:
             handle.seek(max(0, size_bytes - sample_bytes))
             digest.update(handle.read(sample_bytes))
@@ -228,8 +259,84 @@ def git_commit(repo_root: Path) -> str:
         return "unknown"
 
 
-def build_run_metadata(config: ResolvedRunConfig) -> Dict[str, Any]:
+def model_code_sha256(repo_root: Path, ref: Optional[str] = None) -> str:
+    """Hash result-affecting deterministic numerical source code.
+
+    If ``ref`` is supplied, hash the files as stored at that Git commit. This is
+    used only to migrate/validate legacy manifests that predate direct code hashes.
+    """
+    digest = hashlib.sha256()
+    found = 0
+    for rel in _MODEL_RESULT_FILES:
+        if ref is None:
+            path = repo_root / rel
+            if not path.is_file():
+                raise FileNotFoundError(f"Model source file not found: {path}")
+            file_sha = sha256_file(path)
+        else:
+            try:
+                content = subprocess.check_output(
+                    ["git", "-C", str(repo_root), "show", f"{ref}:{rel}"],
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Cannot read {rel} at git ref {ref!r}"
+                ) from exc
+            file_sha = hashlib.sha256(content).hexdigest()
+        found += 1
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_sha.encode("ascii"))
+        digest.update(b"\0")
+    if found == 0:
+        raise RuntimeError(f"Could not hash model code under {repo_root}")
+    return digest.hexdigest()
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _effective_parameter_config(config: ResolvedRunConfig) -> Dict[str, Any]:
+    effective = _load_yaml(config.base_parameter_path)
+    if config.experiment_path.is_file():
+        effective = _deep_merge(effective, _load_yaml(config.experiment_path))
+    effective = _deep_merge(effective, config.raw.get("model_overrides", {}) or {})
+    return effective
+
+
+def _dynamic_density_metadata(config: ResolvedRunConfig) -> Dict[str, Any]:
+    effective = _effective_parameter_config(config)
+    dynamic = effective.get("dynamic_carbon_density", {}) or {}
+    if not bool(dynamic.get("enabled", False)):
+        return {
+            "dynamic_density_file": "disabled",
+            "dynamic_density_fingerprint": "disabled",
+        }
+
+    density_path = Path(dynamic.get("path", "dynamic_carbon_density.parquet"))
+    if not density_path.is_absolute():
+        density_path = config.base_parameter_path.parent / density_path
+    density_path = density_path.resolve()
+    if not density_path.is_file():
+        raise FileNotFoundError(
+            f"Dynamic carbon-density file not found: {density_path}"
+        )
     return {
+        "dynamic_density_file": str(density_path),
+        "dynamic_density_fingerprint": file_fingerprint(density_path),
+    }
+
+
+def build_run_metadata(config: ResolvedRunConfig) -> Dict[str, Any]:
+    metadata = {
         "run_name": config.run_name,
         "resolution": config.resolution,
         "input_format": config.input_format,
@@ -253,18 +360,21 @@ def build_run_metadata(config: ResolvedRunConfig) -> Dict[str, Any]:
         "parameter_file": str(config.base_parameter_path),
         "experiment_file": str(config.experiment_path),
         "run_config_file": str(config.config_path),
-        "run_config_sha256": hashlib.sha256(config.raw_text.encode("utf-8")).hexdigest(),
+        # Semantic hash: YAML comments/formatting do not change result identity.
+        "run_config_sha256": semantic_yaml_sha256(config.raw_text),
         "parameter_sha256": sha256_file(config.base_parameter_path),
         "experiment_sha256": sha256_file(config.experiment_path),
+        "model_code_sha256": model_code_sha256(config.repo_root),
+        # Git commit remains provenance only; it is intentionally not an identity key.
         "git_commit": git_commit(config.repo_root),
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "run_config_yaml": config.raw_text,
     }
+    metadata.update(_dynamic_density_metadata(config))
+    return metadata
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """Atomically replace a UTF-8 text file."""
-
     temporary = path.with_name(
         ".{}.{}.{}.tmp".format(path.name, os.getpid(), uuid.uuid4().hex)
     )
@@ -276,8 +386,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def manifest_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """Fields that uniquely identify one model configuration."""
-
+    """Fields that uniquely identify one deterministic numerical result."""
     keys = (
         "run_name",
         "resolution",
@@ -300,12 +409,78 @@ def manifest_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "run_config_sha256",
         "parameter_sha256",
         "experiment_sha256",
-        "git_commit",
+        "model_code_sha256",
+        "dynamic_density_file",
+        "dynamic_density_fingerprint",
     )
-    return {
-        key: metadata.get(key)
-        for key in keys
-    }
+    return {key: metadata.get(key) for key in keys}
+
+
+def _normalize_metadata_value(value: Any) -> str:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                value = json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+    return _canonical_json(value)
+
+
+def metadata_identity_matches(
+    existing: Dict[str, Any],
+    expected: Dict[str, Any],
+    *,
+    repo_root: Optional[Path] = None,
+) -> bool:
+    """Compare identities with compatibility for pre-code-hash manifests.
+
+    Compatibility rules are intentionally conservative:
+    - legacy raw-text run-config hashes may be upgraded using stored run_config_yaml;
+    - a missing model-code hash may be reconstructed from the legacy git_commit;
+    - missing dynamic-density metadata is accepted only when dynamic density is disabled.
+    """
+    expected_identity = manifest_identity(expected)
+
+    for key, expected_value in expected_identity.items():
+        existing_value = existing.get(key)
+
+        if key == "run_config_sha256":
+            if _normalize_metadata_value(existing_value) == _normalize_metadata_value(expected_value):
+                continue
+            legacy_yaml = existing.get("run_config_yaml")
+            if legacy_yaml is not None:
+                try:
+                    if semantic_yaml_sha256(str(legacy_yaml)) == str(expected_value):
+                        continue
+                except Exception:
+                    pass
+            return False
+
+        if key == "model_code_sha256" and existing_value is None:
+            if repo_root is None:
+                return False
+            legacy_commit = str(existing.get("git_commit", "")).strip()
+            if not legacy_commit or legacy_commit == "unknown":
+                return False
+            try:
+                legacy_hash = model_code_sha256(repo_root, ref=legacy_commit)
+            except Exception:
+                return False
+            if legacy_hash == str(expected_value):
+                continue
+            return False
+
+        if key in {"dynamic_density_file", "dynamic_density_fingerprint"}:
+            if existing_value is None and expected_value == "disabled":
+                continue
+
+        if _normalize_metadata_value(existing_value) != _normalize_metadata_value(expected_value):
+            return False
+
+    return True
 
 
 def write_run_manifest(
@@ -316,28 +491,28 @@ def write_run_manifest(
     manifest_name: str = "run_manifest.json",
     overwrite_manifest: bool = True,
 ) -> None:
-    """Write the copied run YAML and one run or band manifest.
-
-    A run directory cannot be reused with a different run YAML. This prevents
-    output bands produced from different model configurations from being mixed.
-    """
-
+    """Write copied run YAML and one run/band manifest safely."""
     output_dir.mkdir(parents=True, exist_ok=True)
-
     config_copy = output_dir / "run_config.yml"
 
     try:
-        # Exclusive creation is safe when multiple SLURM tasks start together.
         with config_copy.open("x", encoding="utf-8") as handle:
             handle.write(config.raw_text)
     except FileExistsError:
         existing_config = config_copy.read_text(encoding="utf-8")
         if existing_config != config.raw_text:
-            raise RuntimeError(
-                "The output directory already contains a different "
-                "run_config.yml. Use a new run.name or remove the old "
-                "run directory before starting this simulation."
-            )
+            try:
+                same_semantics = (
+                    semantic_yaml_sha256(existing_config)
+                    == semantic_yaml_sha256(config.raw_text)
+                )
+            except Exception:
+                same_semantics = False
+            if not same_semantics:
+                raise RuntimeError(
+                    "The output directory already contains a semantically different "
+                    "run_config.yml. Use a new run.name or remove the old run directory."
+                )
 
     manifest_path = output_dir / manifest_name
 
@@ -348,13 +523,17 @@ def write_run_manifest(
             )
         except Exception as exc:
             raise RuntimeError(
-                "Existing manifest cannot be read: {}".format(manifest_path)
+                f"Existing manifest cannot be read: {manifest_path}"
             ) from exc
 
-        if manifest_identity(existing_metadata) != manifest_identity(metadata):
+        if not metadata_identity_matches(
+            existing_metadata,
+            metadata,
+            repo_root=config.repo_root,
+        ):
             raise RuntimeError(
-                "The output directory belongs to a different model build or "
-                "configuration. Use a new run.name. Existing manifest: {}"
+                "The output directory belongs to a different numerical model build "
+                "or configuration. Use a new run.name. Existing manifest: {}"
                 .format(manifest_path)
             )
         return

@@ -3,11 +3,12 @@
 This module operates on YAML-like mappings and produces nested
 ``parameter_overrides`` consumed by ``ParameterLoader``.
 
-The validator includes cross-parameter physical checks required by the MC
-design, including the harvest soil-floor constraint:
-
-    SOC_min_v <= carbon_density.Soil.v
-    SOC_min_s <= carbon_density.Soil.s
+The validator checks numerical/physical bounds that are unambiguously required
+by the current model implementation. In particular, harvest ``SOC_min_*`` is
+required to be non-negative, but it is NOT forced to be <= equilibrium soil
+carbon density: the deterministic harvest code itself safely handles a higher
+floor through ``max(0, current_soil - SOC_min)`` and the current baseline
+contains such cases (for example PFT9).
 
 Python 3.8 compatible.
 """
@@ -17,7 +18,7 @@ from copy import deepcopy
 import fnmatch
 import json
 import math
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, MutableMapping, Sequence, Tuple
 
 import numpy as np
 
@@ -89,18 +90,12 @@ def get_path(config: Mapping[str, Any], path: Sequence[str]) -> Any:
     node: Any = config
     for key in path:
         if not isinstance(node, Mapping) or key not in node:
-            raise KeyError(
-                "Missing parameter path: {}".format(path_to_string(path))
-            )
+            raise KeyError("Missing parameter path: {}".format(path_to_string(path)))
         node = node[key]
     return node
 
 
-def set_path(
-    config: MutableMapping[str, Any],
-    path: Sequence[str],
-    value: Any,
-) -> None:
+def set_path(config: MutableMapping[str, Any], path: Sequence[str], value: Any) -> None:
     if not path:
         raise ValueError("Cannot set an empty parameter path.")
 
@@ -110,7 +105,6 @@ def set_path(
         if child is None:
             child = {}
             node[key] = child
-
         if not isinstance(child, MutableMapping):
             raise TypeError(
                 "Cannot descend through non-mapping parameter path: {}".format(
@@ -118,7 +112,6 @@ def set_path(
                 )
             )
         node = child
-
     node[path[-1]] = value
 
 
@@ -131,10 +124,7 @@ def _clip(value: float, lower: Any = None, upper: Any = None) -> float:
     return out
 
 
-def _draw_multiplier(
-    rng: np.random.Generator,
-    spec: Mapping[str, Any],
-) -> float:
+def _draw_multiplier(rng: np.random.Generator, spec: Mapping[str, Any]) -> float:
     dist = str(spec.get("distribution", "uniform_multiplier")).lower()
 
     if dist == "uniform_multiplier":
@@ -147,26 +137,20 @@ def _draw_multiplier(
     if dist == "normal_multiplier":
         mean = float(spec.get("mean", 1.0))
         sd = float(spec["sd"])
-        return _clip(
-            rng.normal(mean, sd),
-            spec.get("lower"),
-            spec.get("upper"),
-        )
+        if sd < 0.0:
+            raise ValueError("normal_multiplier sd must be >= 0")
+        return _clip(rng.normal(mean, sd), spec.get("lower"), spec.get("upper"))
 
     if dist == "lognormal_multiplier":
         cv = float(spec["cv"])
         if cv < 0.0:
-            raise ValueError(
-                "lognormal_multiplier cv must be >= 0"
-            )
+            raise ValueError("lognormal_multiplier cv must be >= 0")
         sigma2 = math.log1p(cv * cv)
         sigma = math.sqrt(sigma2)
         mu = -0.5 * sigma2  # E[multiplier] = 1
         return float(rng.lognormal(mean=mu, sigma=sigma))
 
-    raise ValueError(
-        "Unsupported multiplier distribution: {}".format(dist)
-    )
+    raise ValueError("Unsupported multiplier distribution: {}".format(dist))
 
 
 def _draw_direct(
@@ -184,32 +168,27 @@ def _draw_direct(
         value = rng.uniform(low, high)
 
     elif dist == "normal":
-        value = rng.normal(
-            float(spec.get("mean", baseline)),
-            float(spec["sd"]),
-        )
+        sd = float(spec["sd"])
+        if sd < 0.0:
+            raise ValueError("normal sd must be >= 0")
+        value = rng.normal(float(spec.get("mean", baseline)), sd)
 
     elif dist == "lognormal":
         mean = float(spec.get("mean", baseline))
         cv = float(spec["cv"])
         if mean <= 0.0:
-            raise ValueError(
-                "lognormal direct sampling requires positive mean"
-            )
+            raise ValueError("lognormal direct sampling requires positive mean")
+        if cv < 0.0:
+            raise ValueError("lognormal cv must be >= 0")
         sigma2 = math.log1p(cv * cv)
         sigma = math.sqrt(sigma2)
         mu = math.log(mean) - 0.5 * sigma2
         value = rng.lognormal(mu, sigma)
 
     elif dist == "beta_from_baseline":
-        concentration = float(
-            spec.get("concentration", 50.0)
-        )
+        concentration = float(spec.get("concentration", 50.0))
         if concentration <= 0.0:
-            raise ValueError(
-                "beta_from_baseline concentration must be > 0"
-            )
-
+            raise ValueError("beta_from_baseline concentration must be > 0")
         mean = float(baseline)
         if mean <= 0.0 or mean >= 1.0:
             # Preserve exact structural zeros/ones.
@@ -220,21 +199,12 @@ def _draw_direct(
             value = rng.beta(alpha, beta)
 
     else:
-        raise ValueError(
-            "Unsupported direct distribution: {}".format(dist)
-        )
+        raise ValueError("Unsupported direct distribution: {}".format(dist))
 
-    return _clip(
-        value,
-        spec.get("lower"),
-        spec.get("upper"),
-    )
+    return _clip(value, spec.get("lower"), spec.get("upper"))
 
 
-def _coerce_sampled_value(
-    value: float,
-    spec: Mapping[str, Any],
-) -> Any:
+def _coerce_sampled_value(value: float, spec: Mapping[str, Any]) -> Any:
     if bool(spec.get("integer", False)):
         return int(round(float(value)))
     return float(value)
@@ -249,39 +219,26 @@ def _apply_scalar_rule(
     draws: MutableMapping[str, Any],
 ) -> None:
     name = str(rule.get("name", "unnamed_parameter"))
-
     targets_raw = rule.get("targets")
     if isinstance(targets_raw, str):
         targets = [targets_raw]
     else:
         targets = list(targets_raw or [])
-
     if not targets:
-        raise ValueError(
-            "Scalar rule {!r} has no targets".format(name)
-        )
+        raise ValueError("Scalar rule {!r} has no targets".format(name))
 
     expanded: List[PathTuple] = []
     for pattern in targets:
-        expanded.extend(
-            expand_target_pattern(
-                baseline_config,
-                str(pattern),
-            )
-        )
+        expanded.extend(expand_target_pattern(baseline_config, str(pattern)))
     expanded = sorted(set(expanded))
 
     scope = str(rule.get("scope", "independent")).lower()
     if scope not in {"independent", "shared"}:
         raise ValueError(
-            "Rule {!r}: scope must be independent or shared".format(
-                name
-            )
+            "Rule {!r}: scope must be independent or shared".format(name)
         )
 
-    distribution = str(
-        rule.get("distribution", "uniform_multiplier")
-    ).lower()
+    distribution = str(rule.get("distribution", "uniform_multiplier")).lower()
     multiplier_mode = distribution.endswith("_multiplier")
 
     shared_draw = None
@@ -289,22 +246,12 @@ def _apply_scalar_rule(
         if multiplier_mode:
             shared_draw = _draw_multiplier(rng, rule)
         else:
-            first_baseline = float(
-                get_path(baseline_config, expanded[0])
-            )
-            shared_draw = _draw_direct(
-                rng,
-                rule,
-                first_baseline,
-            )
+            first_baseline = float(get_path(baseline_config, expanded[0]))
+            shared_draw = _draw_direct(rng, rule, first_baseline)
 
     rule_draws: Dict[str, Any] = {}
-
     for path in expanded:
-        baseline = float(
-            get_path(baseline_config, path)
-        )
-
+        baseline = float(get_path(baseline_config, path))
         if multiplier_mode:
             multiplier = (
                 float(shared_draw)
@@ -322,37 +269,22 @@ def _apply_scalar_rule(
             sampled = (
                 float(shared_draw)
                 if shared_draw is not None
-                else _draw_direct(
-                    rng,
-                    rule,
-                    baseline,
-                )
+                else _draw_direct(rng, rule, baseline)
             )
             draw_value = sampled
 
-        sampled = _coerce_sampled_value(
-            sampled,
-            rule,
-        )
+        sampled = _coerce_sampled_value(sampled, rule)
         set_path(overrides, path, sampled)
         rule_draws[path_to_string(path)] = draw_value
 
     draws[name] = rule_draws
 
 
-def _expand_parent_pattern(
-    config: Mapping[str, Any],
-    pattern: str,
-) -> List[PathTuple]:
-    """Expand a dotted wildcard pattern expected to resolve to mappings."""
+def _expand_parent_pattern(config: Mapping[str, Any], pattern: str) -> List[PathTuple]:
     parts = _split_pattern(pattern)
     out: List[PathTuple] = []
 
-    def walk(
-        node: Any,
-        index: int,
-        prefix: Tuple[str, ...],
-    ) -> None:
+    def walk(node: Any, index: int, prefix: Tuple[str, ...]) -> None:
         if index == len(parts):
             if not isinstance(node, Mapping):
                 raise ValueError(
@@ -362,10 +294,8 @@ def _expand_parent_pattern(
                 )
             out.append(prefix)
             return
-
         if not isinstance(node, Mapping):
             return
-
         token = parts[index]
         matches = [
             str(key)
@@ -373,19 +303,12 @@ def _expand_parent_pattern(
             if fnmatch.fnmatchcase(str(key), token)
         ]
         for key in sorted(matches):
-            walk(
-                node[key],
-                index + 1,
-                prefix + (key,),
-            )
+            walk(node[key], index + 1, prefix + (key,))
 
     walk(config, 0, tuple())
-
     if not out:
         raise KeyError(
-            "Simplex parent pattern matched nothing: {}".format(
-                pattern
-            )
+            "Simplex parent pattern matched nothing: {}".format(pattern)
         )
     return out
 
@@ -398,53 +321,28 @@ def _apply_simplex_group(
     group: Mapping[str, Any],
     draws: MutableMapping[str, Any],
 ) -> None:
-    name = str(
-        group.get("name", "unnamed_simplex")
-    )
+    name = str(group.get("name", "unnamed_simplex"))
     parent_pattern = str(group["parent_pattern"])
-    fields = [
-        str(value)
-        for value in group.get("fields", [])
-    ]
-
+    fields = [str(value) for value in group.get("fields", [])]
     if len(fields) < 2:
         raise ValueError(
-            "Simplex group {!r} requires at least two fields".format(
-                name
-            )
+            "Simplex group {!r} requires at least two fields".format(name)
         )
 
-    concentration = float(
-        group.get("concentration", 100.0)
-    )
+    concentration = float(group.get("concentration", 100.0))
     if concentration <= 0.0:
-        raise ValueError(
-            "Simplex group concentration must be > 0"
-        )
-
-    preserve_total = bool(
-        group.get("preserve_total", True)
-    )
+        raise ValueError("Simplex group concentration must be > 0")
+    preserve_total = bool(group.get("preserve_total", True))
 
     group_draws: Dict[str, Any] = {}
-
-    for parent in _expand_parent_pattern(
-        baseline_config,
-        parent_pattern,
-    ):
+    for parent in _expand_parent_pattern(baseline_config, parent_pattern):
         values = np.asarray(
             [
-                float(
-                    get_path(
-                        baseline_config,
-                        parent + (field,),
-                    )
-                )
+                float(get_path(baseline_config, parent + (field,)))
                 for field in fields
             ],
             dtype=float,
         )
-
         if np.any(values < 0.0):
             raise ValueError(
                 "Simplex baseline contains a negative fraction at {}".format(
@@ -453,294 +351,162 @@ def _apply_simplex_group(
             )
 
         total = float(values.sum())
-
         if total <= 0.0:
             sampled = values.copy()
         else:
             positive = values > 0.0
-
             if int(positive.sum()) <= 1:
                 sampled = values.copy()
             else:
                 proportions = values[positive] / total
-                alpha = np.maximum(
-                    proportions * concentration,
-                    1.0e-9,
-                )
+                alpha = np.maximum(proportions * concentration, 1.0e-9)
                 sampled_positive = rng.dirichlet(alpha)
-
                 sampled = np.zeros_like(values)
                 sampled[positive] = sampled_positive
-
                 if preserve_total:
                     sampled *= total
 
         for field, value in zip(fields, sampled):
-            set_path(
-                overrides,
-                parent + (field,),
-                float(value),
-            )
-
+            set_path(overrides, parent + (field,), float(value))
         group_draws[path_to_string(parent)] = {
-            field: float(value)
-            for field, value in zip(
-                fields,
-                sampled,
-            )
+            field: float(value) for field, value in zip(fields, sampled)
         }
 
     draws[name] = group_draws
+
+
+def _check_fraction_fields(
+    errors: List[str],
+    prefix: str,
+    cfg: Mapping[str, Any],
+    fields: Sequence[str],
+    tol: float,
+) -> None:
+    for field in fields:
+        if field not in cfg:
+            continue
+        try:
+            value = float(cfg[field])
+        except Exception:
+            errors.append("{}.{} is not numeric".format(prefix, field))
+            continue
+        if value < -tol or value > 1.0 + tol:
+            errors.append("{}.{} outside [0,1]".format(prefix, field))
+
+
+def _check_nonnegative_fields(
+    errors: List[str],
+    prefix: str,
+    cfg: Mapping[str, Any],
+    fields: Sequence[str],
+    tol: float,
+) -> None:
+    for field in fields:
+        if field not in cfg:
+            continue
+        try:
+            value = float(cfg[field])
+        except Exception:
+            errors.append("{}.{} is not numeric".format(prefix, field))
+            continue
+        if value < -tol:
+            errors.append("{}.{} < 0".format(prefix, field))
 
 
 def validate_model_parameters(
     config: Mapping[str, Any],
     tol: float = 1.0e-10,
 ) -> None:
-    """Validate MC-sensitive physical constraints in the effective parameters."""
+    """Validate unambiguous physical/numerical constraints for MC samples."""
     errors: List[str] = []
 
-    density = config.get(
-        "carbon_density", {}
-    ) or {}
-
+    density = config.get("carbon_density", {}) or {}
     for pft, pft_cfg in density.items():
         if not isinstance(pft_cfg, Mapping):
             continue
-
         for pool_name in ("Biomass", "Soil"):
-            pool = pft_cfg.get(
-                pool_name, {}
-            ) or {}
-
+            pool = pft_cfg.get(pool_name, {}) or {}
             if not isinstance(pool, Mapping):
                 continue
-
             for cover, value in pool.items():
                 try:
                     number = float(value)
                 except Exception:
                     errors.append(
-                        "{}.{}.{} is not numeric".format(
-                            pft,
-                            pool_name,
-                            cover,
-                        )
+                        "{}.{}.{} is not numeric".format(pft, pool_name, cover)
                     )
                     continue
-
                 if number < -tol:
-                    errors.append(
-                        "{}.{}.{} < 0".format(
-                            pft,
-                            pool_name,
-                            cover,
-                        )
-                    )
+                    errors.append("{}.{}.{} < 0".format(pft, pool_name, cover))
 
-    clearing = config.get(
-        "clearing_param", {}
-    ) or {}
-
+    clearing = config.get("clearing_param", {}) or {}
     for pft, cfg in clearing.items():
         if not isinstance(cfg, Mapping):
             continue
-
+        prefix = "clearing_param.{}".format(pft)
         fraction_fields = (
-            "Prod_1",
-            "Prod_10",
-            "Prod_100",
-            "Bio_Soil",
-            "f_v",
-            "f_s",
+            "Prod_1", "Prod_10", "Prod_100", "Bio_Soil", "f_v", "f_s"
         )
-
-        for field in fraction_fields:
-            if field in cfg:
-                value = float(cfg[field])
-                if value < -tol or value > 1.0 + tol:
-                    errors.append(
-                        "clearing_param.{}.{} outside [0,1]".format(
-                            pft,
-                            field,
-                        )
-                    )
-
-        alloc_fields = (
-            "Prod_1",
-            "Prod_10",
-            "Prod_100",
-            "Bio_Soil",
-        )
-
-        if all(
-            field in cfg
-            for field in alloc_fields
-        ):
-            total = sum(
-                float(cfg[field])
-                for field in alloc_fields
-            )
+        _check_fraction_fields(errors, prefix, cfg, fraction_fields, tol)
+        alloc_fields = ("Prod_1", "Prod_10", "Prod_100", "Bio_Soil")
+        if all(field in cfg for field in alloc_fields):
+            total = sum(float(cfg[field]) for field in alloc_fields)
             if total > 1.0 + tol:
                 errors.append(
-                    "clearing_param.{} allocation sum {:.8f} > 1".format(
-                        pft,
-                        total,
-                    )
+                    "{} allocation sum {:.8f} > 1".format(prefix, total)
                 )
+        _check_nonnegative_fields(errors, prefix, cfg, ("t_lapse", "t_rest"), tol)
 
-        for field in ("t_lapse", "t_rest"):
-            if (
-                field in cfg
-                and float(cfg[field]) < -tol
-            ):
-                errors.append(
-                    "clearing_param.{}.{} < 0".format(
-                        pft,
-                        field,
-                    )
-                )
-
-    abandonment = config.get(
-        "abandonment_param", {}
-    ) or {}
-
+    abandonment = config.get("abandonment_param", {}) or {}
     for pft, cfg in abandonment.items():
         if not isinstance(cfg, Mapping):
             continue
+        _check_nonnegative_fields(
+            errors,
+            "abandonment_param.{}".format(pft),
+            cfg,
+            ("t_biomass", "t_soil"),
+            tol,
+        )
 
-        for field in (
-            "t_biomass",
-            "t_soil",
-        ):
-            if (
-                field in cfg
-                and float(cfg[field]) < -tol
-            ):
-                errors.append(
-                    "abandonment_param.{}.{} < 0".format(
-                        pft,
-                        field,
-                    )
-                )
-
-    harvest = config.get(
-        "harvest_param", {}
-    ) or {}
-
+    harvest = config.get("harvest_param", {}) or {}
     for pft, cfg in harvest.items():
         if not isinstance(cfg, Mapping):
             continue
-
-        for field in (
-            "Prod_1",
-            "Prod_10",
-            "Prod_100",
-            "Bio_Soil_v",
-            "Bio_Soil_s",
-            "f_v",
-            "f_s",
-        ):
-            if field in cfg:
-                value = float(cfg[field])
-                if value < -tol or value > 1.0 + tol:
-                    errors.append(
-                        "harvest_param.{}.{} outside [0,1]".format(
-                            pft,
-                            field,
-                        )
-                    )
-
-        product_fields = (
-            "Prod_1",
-            "Prod_10",
-            "Prod_100",
+        prefix = "harvest_param.{}".format(pft)
+        _check_fraction_fields(
+            errors,
+            prefix,
+            cfg,
+            (
+                "Prod_1", "Prod_10", "Prod_100",
+                "Bio_Soil_v", "Bio_Soil_s", "f_v", "f_s",
+            ),
+            tol,
         )
-
-        if all(
-            field in cfg
-            for field in product_fields
-        ):
-            total = sum(
-                float(cfg[field])
-                for field in product_fields
-            )
+        product_fields = ("Prod_1", "Prod_10", "Prod_100")
+        if all(field in cfg for field in product_fields):
+            total = sum(float(cfg[field]) for field in product_fields)
             if total > 1.0 + tol:
                 errors.append(
-                    "harvest_param.{} product fraction sum {:.8f} > 1".format(
-                        pft,
-                        total,
-                    )
+                    "{} product fraction sum {:.8f} > 1".format(prefix, total)
                 )
-
-        for field in (
-            "SOC_min_v",
-            "SOC_min_s",
-            "t_lapse",
-        ):
-            if (
-                field in cfg
-                and float(cfg[field]) < -tol
-            ):
-                errors.append(
-                    "harvest_param.{}.{} < 0".format(
-                        pft,
-                        field,
-                    )
-                )
-
-        # Cross-parameter physical constraint:
-        # harvest SOC_min is an absolute soil-carbon density floor and must not
-        # exceed the corresponding equilibrium soil-carbon density.
-        pft_density = density.get(
-            pft, {}
-        ) or {}
-        soil_density = (
-            pft_density.get("Soil", {})
-            if isinstance(pft_density, Mapping)
-            else {}
-        ) or {}
-
-        for cover, soc_field in (
-            ("v", "SOC_min_v"),
-            ("s", "SOC_min_s"),
-        ):
-            if (
-                soc_field in cfg
-                and isinstance(soil_density, Mapping)
-                and cover in soil_density
-            ):
-                soc_min = float(cfg[soc_field])
-                soil_eq = float(
-                    soil_density[cover]
-                )
-
-                if soc_min > soil_eq + tol:
-                    errors.append(
-                        "harvest_param.{}.{} ({:.8f}) exceeds "
-                        "carbon_density.{}.Soil.{} ({:.8f})".format(
-                            pft,
-                            soc_field,
-                            soc_min,
-                            pft,
-                            cover,
-                            soil_eq,
-                        )
-                    )
+        # SOC_min is a non-negative disturbance floor. It may exceed the
+        # equilibrium soil density in the current baseline; the harvest model
+        # then simply produces zero rapid-soil loss for an equilibrium patch.
+        _check_nonnegative_fields(
+            errors,
+            prefix,
+            cfg,
+            ("SOC_min_v", "SOC_min_s", "t_lapse"),
+            tol,
+        )
 
     if errors:
-        preview = "\n  - " + "\n  - ".join(
-            errors[:30]
-        )
+        preview = "\n  - " + "\n  - ".join(errors[:30])
         if len(errors) > 30:
-            preview += "\n  - ... {} more".format(
-                len(errors) - 30
-            )
-
-        raise ValueError(
-            "Invalid Monte Carlo parameter set:"
-            + preview
-        )
+            preview += "\n  - ... {} more".format(len(errors) - 30)
+        raise ValueError("Invalid Monte Carlo parameter set:" + preview)
 
 
 def sample_overrides(
@@ -753,14 +519,9 @@ def sample_overrides(
     overrides: Dict[str, Any] = {}
     draws: Dict[str, Any] = {}
 
-    for rule in spec.get(
-        "parameters", []
-    ) or []:
-        if not bool(
-            rule.get("enabled", True)
-        ):
+    for rule in spec.get("parameters", []) or []:
+        if not bool(rule.get("enabled", True)):
             continue
-
         _apply_scalar_rule(
             baseline_config=baseline_config,
             overrides=overrides,
@@ -769,14 +530,9 @@ def sample_overrides(
             draws=draws,
         )
 
-    for group in spec.get(
-        "simplex_groups", []
-    ) or []:
-        if not bool(
-            group.get("enabled", True)
-        ):
+    for group in spec.get("simplex_groups", []) or []:
+        if not bool(group.get("enabled", True)):
             continue
-
         _apply_simplex_group(
             baseline_config=baseline_config,
             overrides=overrides,
@@ -785,12 +541,8 @@ def sample_overrides(
             draws=draws,
         )
 
-    effective = deep_merge(
-        baseline_config,
-        overrides,
-    )
+    effective = deep_merge(baseline_config, overrides)
     validate_model_parameters(effective)
-
     return overrides, draws
 
 

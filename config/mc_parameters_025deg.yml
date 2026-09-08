@@ -1,25 +1,22 @@
 # Literature-informed first-production Monte Carlo design.
 #
-# Scientific design principles
-# ----------------------------
-# 1) Carbon densities and carbon-allocation rules are treated as the highest
-#    priority bookkeeping parameterisation uncertainties.
-# 2) Response/recovery times are sampled with moderate uncertainty.
-# 3) Natural-vegetation soil density and harvest SOC_min are multiplied by the
-#    SAME shared random factor. This preserves the configured physical ratio
-#    SOC_min / Soil and prevents sampled SOC_min from exceeding the sampled
-#    equilibrium soil density.
-# 4) Structural zeros remain zero.
-# 5) Beta sampling keeps fractions in [0,1].
-# 6) Dirichlet/simplex sampling preserves physically valid allocation totals.
-# 7) Use the same priors at 1deg and 0.25deg.
+# Bastos et al. (2021) identified carbon densities and carbon-allocation rules
+# as larger bookkeeping parameterisation sensitivities than response-time
+# constants. Gasser et al. (2020) found biogeochemical parameterisation
+# uncertainty of about 27-29% for LULCC emissions in their probabilistic setup.
 #
-# IMPORTANT
-# ---------
-# The exact CV/concentration values below are WORKING PRIORS. They are not
-# probability distributions directly reported by Bastos et al. (2021) or
-# Gasser et al. (2020). Keep scientific_ranges_confirmed=false until the
-# uncertainty design is explicitly approved.
+# IMPORTANT: the exact CV/concentration values below are WORKING PRIORS. They
+# are not probability distributions directly reported by those studies.
+#
+# Design:
+# - shared family multipliers represent systematic parameter uncertainty and
+#   preserve the configured PFT ordering;
+# - structural zeros stay zero under multiplier sampling;
+# - beta distributions keep fractions in [0,1];
+# - Dirichlet/simplex sampling keeps allocation sums physical;
+# - use the same priors at 1deg and 0.25deg;
+# - harvest f_v/f_s are intentionally NOT sampled because current harvest.py
+#   does not use them in the area-driven harvest calculation.
 
 monte_carlo:
   run_config: config/run_mc_025deg.yml
@@ -30,13 +27,7 @@ monte_carlo:
   scientific_ranges_confirmed: false
 
 parameters:
-  # --------------------------------------------------------------------------
   # A. Carbon densities -- highest priority
-  # --------------------------------------------------------------------------
-
-  # Natural vegetation biomass.
-  # One shared multiplier preserves relative PFT and v/s contrasts while
-  # representing systematic uncertainty in natural biomass stocks.
   - name: biomass_density_natural
     enabled: true
     targets:
@@ -47,8 +38,6 @@ parameters:
     scope: shared
     value_lower: 0.0
 
-  # Managed-land biomass is sampled independently from natural biomass so the
-  # natural-to-managed biomass contrast can vary.
   - name: biomass_density_managed
     enabled: true
     targets:
@@ -59,17 +48,11 @@ parameters:
     scope: shared
     value_lower: 0.0
 
-  # IMPORTANT:
-  # Soil.v/s and harvest SOC_min_v/s MUST share the same multiplier. This keeps
-  # SOC_min_v / Soil.v and SOC_min_s / Soil.s unchanged within each realization
-  # and prevents a downward soil draw from making SOC_min physically impossible.
-  - name: soil_density_natural_and_harvest_floor
+  - name: soil_density_natural
     enabled: true
     targets:
       - carbon_density.PFT*.Soil.v
       - carbon_density.PFT*.Soil.s
-      - harvest_param.PFT*.SOC_min_v
-      - harvest_param.PFT*.SOC_min_s
     distribution: lognormal_multiplier
     cv: 0.15
     scope: shared
@@ -85,10 +68,7 @@ parameters:
     scope: shared
     value_lower: 0.0
 
-  # --------------------------------------------------------------------------
   # B. Response / recovery times -- secondary priority
-  # --------------------------------------------------------------------------
-
   - name: clearing_response_time
     enabled: true
     targets:
@@ -126,10 +106,17 @@ parameters:
     scope: shared
     value_lower: 0.0
 
-  # --------------------------------------------------------------------------
-  # C. Fractions / fast-slow partitioning
-  # --------------------------------------------------------------------------
+  - name: harvest_soc_min
+    enabled: true
+    targets:
+      - harvest_param.PFT*.SOC_min_v
+      - harvest_param.PFT*.SOC_min_s
+    distribution: lognormal_multiplier
+    cv: 0.15
+    scope: shared
+    value_lower: 0.0
 
+  # C. Fractions used by the current numerical model
   - name: clearing_fast_fraction
     enabled: true
     targets:
@@ -152,22 +139,8 @@ parameters:
     lower: 0.0
     upper: 1.0
 
-  - name: harvest_fast_fraction
-    enabled: true
-    targets:
-      - harvest_param.PFT*.f_v
-      - harvest_param.PFT*.f_s
-    distribution: beta_from_baseline
-    concentration: 40
-    scope: independent
-    lower: 0.0
-    upper: 1.0
-
 simplex_groups:
-  # --------------------------------------------------------------------------
   # D. Clearing and harvest allocation -- highest priority
-  # --------------------------------------------------------------------------
-
   - name: clearing_allocation
     enabled: true
     parent_pattern: clearing_param.PFT*
