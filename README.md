@@ -1275,3 +1275,230 @@ g C m^-2 yr^-1
 10. Check all done variables before merging outputs.
 ```
 
+---
+
+## 22. Monte Carlo uncertainty analysis
+
+The repository includes a summary-only Monte Carlo (MC) workflow for parameter
+uncertainty analysis at both 1° and 0.25°. The deterministic bookkeeping core is
+not duplicated: each MC realization generates parameter overrides, passes them
+through `ParameterLoader`, calls the normal `LULCCSimulator`, and spatially sums
+annual additive outputs directly to Parquet.
+
+### 22.1 Configurations
+
+```text
+config/run_mc_1deg.yml
+config/run_mc_025deg.yml
+config/mc_parameters_1deg.yml
+config/mc_parameters_025deg.yml
+config/mc_parameters_smoke_1deg.yml
+config/mc_parameters_smoke_025deg.yml
+```
+
+The MC run YAMLs are synchronized with the current deterministic VSCP setup.
+The first MC experiment uses static carbon density; transient carbon density
+should be treated as a separate uncertainty experiment.
+
+### 22.2 Parameter design
+
+The first-production design prioritizes carbon density and carbon allocation,
+followed by response/recovery times.
+
+| Parameter family | Distribution | Working uncertainty |
+|---|---|---|
+| Natural biomass density (`v`,`s`) | lognormal multiplier | CV = 20% |
+| Managed biomass density (`c`,`p`) | lognormal multiplier | CV = 20% |
+| Natural soil density (`v`,`s`) | lognormal multiplier | CV = 15% |
+| Managed soil density (`c`,`p`) | lognormal multiplier | CV = 15% |
+| Clearing response time | lognormal multiplier | CV = 25% |
+| Abandonment biomass time | lognormal multiplier | CV = 25% |
+| Abandonment soil time | lognormal multiplier | CV = 25% |
+| Harvest response time | lognormal multiplier | CV = 25% |
+| Harvest `SOC_min` | lognormal multiplier | CV = 15% |
+| Fast/slow fractions | beta | concentration = 40 |
+| Clearing allocation | Dirichlet/simplex | concentration = 60 |
+| Harvest product split | Dirichlet/simplex | concentration = 60 |
+
+These values are literature-informed working priors, not probability
+distributions directly reported by the source papers. Keep
+`scientific_ranges_confirmed: false` until the ranges are reviewed; then change
+it to `true` for production sampling.
+
+Use the same priors at 1° and 0.25° so resolution is not confounded with
+parameter uncertainty.
+
+### 22.3 Generate samples
+
+1° smoke test:
+
+```bash
+python -m tools.generate_mc_samples \
+  --spec config/mc_parameters_smoke_1deg.yml \
+  --allow-unconfirmed-ranges \
+  --force
+```
+
+0.25° smoke test:
+
+```bash
+python -m tools.generate_mc_samples \
+  --spec config/mc_parameters_smoke_025deg.yml \
+  --allow-unconfirmed-ranges \
+  --force
+```
+
+Production after parameter-range approval:
+
+```bash
+python -m tools.generate_mc_samples \
+  --spec config/mc_parameters_1deg.yml \
+  --force
+```
+
+or:
+
+```bash
+python -m tools.generate_mc_samples \
+  --spec config/mc_parameters_025deg.yml \
+  --force
+```
+
+Default production size is 500 random realizations plus baseline sample 0.
+
+### 22.4 Baseline equivalence
+
+Before a large ensemble, run sample 0 for one band and compare it against the
+matching deterministic band using `tools.validate_mc_band`. Do not launch the
+full ensemble until all common variables pass.
+
+Example submission:
+
+```bash
+bash server/submit_mc_1deg.sh 0 0 0 0
+```
+
+### 22.5 DSUB submission
+
+1° samples 0–2 over all bands:
+
+```bash
+bash server/submit_mc_1deg.sh 0 2
+```
+
+0.25° samples 0–2 over all bands:
+
+```bash
+bash server/submit_mc_025deg.sh 0 2
+```
+
+Production should be submitted in manageable sample batches:
+
+```bash
+bash server/submit_mc_1deg.sh 1 10
+bash server/submit_mc_1deg.sh 11 20
+```
+
+Generic wrapper:
+
+```bash
+bash server/submit_mc_batch.sh 1deg   1 10
+bash server/submit_mc_batch.sh 025deg 1 5
+```
+
+Each DSUB job runs one `sample_id × band` task using one CPU.
+
+### 22.6 Reproducibility
+
+Existing MC bands and merged samples are reused only when the current run
+matches the stored:
+
+```text
+sample-specific override hash
+run-YAML hash
+parameter-file hash
+experiment-file hash
+state-file fingerprint
+transition-file fingerprint
+PFT-file fingerprint
+model-code hash
+year range
+output variables
+```
+
+The sample-table SHA and Git commit are still stored as provenance metadata, but
+they are not used alone to invalidate a result. This allows an existing ensemble
+to be extended with additional samples without rerunning unchanged earlier
+realizations. The model-code hash is computed directly from result-affecting
+Python files, so it also detects uncommitted local code edits.
+
+### 22.7 Merge and summarize
+
+Merge one realization:
+
+```bash
+python -m tools.merge_mc_bands \
+  --config config/run_mc_1deg.yml \
+  --sample-id 1
+```
+
+Merge all completed realizations:
+
+```bash
+python -m tools.merge_all_mc \
+  --config config/run_mc_1deg.yml \
+  --start 0 --end 500 \
+  --skip-incomplete
+```
+
+After all jobs finish, repeat without `--skip-incomplete`.
+
+Calculate ensemble statistics:
+
+```bash
+python -m tools.summarize_mc \
+  --config config/run_mc_1deg.yml
+```
+
+The baseline is excluded by default. Outputs include annual `mean`, `sd`, `p05`,
+`p50`, and `p95`, plus a compact `net_emissions_samples.parquet`.
+
+### 22.8 Convergence
+
+```bash
+python -m tools.check_mc_convergence \
+  --config config/run_mc_1deg.yml \
+  --sizes 25,50,100,200,300,500 \
+  --start-year 1850 \
+  --end-year 2020 \
+  --replicates 50
+```
+
+The script repeatedly draws subsets without replacement and compares them with
+the full completed ensemble. Default pass thresholds are:
+
+```text
+cumulative mean error       <= 2%
+cumulative SD/P05/P95 error <= 5%
+annual statistic NRMSE      <= 5%
+```
+
+The smallest tested sample size meeting all thresholds is reported as
+`recommended_minimum_n`.
+
+### 22.9 Recommended MC workflow
+
+```text
+1. Validate inputs.
+2. Generate smoke samples.
+3. Run baseline sample 0 / band 0.
+4. Pass baseline-equivalence check.
+5. Review and approve parameter priors.
+6. Generate production sample table.
+7. Submit DSUB batches.
+8. Merge bands for each realization.
+9. Summarize ensemble statistics.
+10. Check convergence.
+11. Add samples if convergence is insufficient.
+12. Report exact priors, N, mean/median, SD, and P05-P95.
+```
