@@ -1,6 +1,6 @@
 # LULCC Carbon Bookkeeping Model
 
-A Python-based land-use and land-cover change (LULCC) carbon bookkeeping model for estimating annual carbon-stock changes, gross sources and sinks, and net land-use change emissions.
+A Python-based land-use and land-cover change (LULCC) carbon bookkeeping model for estimating annual carbon-stock changes, gross carbon sources and sinks, and net land-use change emissions.
 
 The model follows the general bookkeeping framework used by BLUE- and LUCE-type models. Land-use events create departures from equilibrium biomass and soil carbon stocks. These departures are retained in legacy pools and relax over time, allowing historical land-use change to continue affecting present-day carbon fluxes.
 
@@ -13,7 +13,7 @@ The model is driven by:
 - PFT- and land-cover-specific biomass and soil carbon densities;
 - event-specific allocation and response parameters.
 
-The current `main` branch supports both original LUH2 variables and pre-aggregated `v/s/c/p/U` inputs through run configuration files. Separate code branches are not required.
+The current `main` branch supports both original LUH2 variables and pre-aggregated `v/s/c/p/U` inputs through run configuration files. The same deterministic bookkeeping core is also used by the Monte Carlo uncertainty workflow.
 
 ---
 
@@ -89,7 +89,7 @@ system_carbon_total
 + atmosphere
 ```
 
-For static carbon density and conservative PFT remapping, the system closure error should be close to numerical zero.
+For static carbon density and conservative PFT remapping, the system closure error should remain close to numerical zero.
 
 ---
 
@@ -123,7 +123,7 @@ c3ann + c4ann + c3per + c4per + c3nfx → c
 urban                                   → U
 ```
 
-The mapping is configurable and should be kept consistent with the PFT map and carbon-density parameterization.
+The mapping is configurable and should remain consistent with the PFT map and carbon-density parameterization.
 
 ---
 
@@ -147,7 +147,7 @@ Clearing removes biomass from the source land-cover class and partitions it amon
 - rapid soil and slash carbon;
 - slow-soil carbon.
 
-The target agricultural biomass stock is treated as an immediate biomass deficit and subsequently relaxes toward equilibrium.
+The target agricultural biomass stock is represented as an immediate biomass deficit and subsequently relaxes toward equilibrium.
 
 ### 3.2 Abandonment and regrowth
 
@@ -160,7 +160,7 @@ p → s
 
 The source biomass and slow-soil state are inherited by secondary vegetation. The difference between the inherited state and the secondary-vegetation equilibrium state creates biomass and soil recovery trajectories.
 
-### 3.3 Cropland–pasture conversion
+### 3.3 Cropland-pasture conversion
 
 Other agricultural transitions include:
 
@@ -467,6 +467,32 @@ Update PFT composition annually while conserving total ecosystem carbon during r
 
 A PFT map finer than the model grid must be area-weighted to the model resolution before simulation. The loader does not silently aggregate a finer PFT map.
 
+### 7.3 Missing PFT cells
+
+Missing-PFT handling is controlled in the run YAML.
+
+```yaml
+pft:
+  missing_cell_policy: skip
+  nearest_search_radius: 8
+  default_index: null
+```
+
+Supported policies are:
+
+```text
+error
+nearest
+default
+skip
+```
+
+The current production 1° and 0.25° configurations use:
+
+```text
+missing_cell_policy: skip
+```
+
 ---
 
 ## 8. Carbon density
@@ -532,6 +558,8 @@ config/config.yml
 experiment YAML
   ↓
 model_overrides in the run YAML
+  ↓
+Monte Carlo parameter overrides, when MC mode is used
 ```
 
 The current transient-density implementation refreshes equilibrium biomass and soil carbon for the existing land-cover-by-PFT area each year.
@@ -543,6 +571,8 @@ Carbon_Density_Adjustment
 ```
 
 This adjustment is excluded from `Closure_Error` and is not included in `Net_Emissions`.
+
+The first production Monte Carlo experiment uses static carbon density. Transient carbon density should be treated as a separate uncertainty experiment.
 
 ---
 
@@ -593,13 +623,20 @@ auto
 
 ## 10. Run configuration
 
-A complete simulation is defined by a run YAML.
+A complete deterministic simulation is defined by a run YAML.
 
-Current server configurations are:
+Current production server configurations are:
 
 ```text
-config/run_025deg.yml
 config/run_1deg.yml
+config/run_025deg.yml
+```
+
+Monte Carlo-specific run configurations are:
+
+```text
+config/run_mc_1deg.yml
+config/run_mc_025deg.yml
 ```
 
 A run configuration contains:
@@ -611,31 +648,34 @@ inputs          state, transition and PFT files
 parameters      base parameter file
 experiment      harvest experiment file
 model_overrides run-specific parameter switches
-pft             PFT time handling and update mode
+pft             PFT time handling and missing-cell behavior
 validation      input validation settings
 output          output prefix, compression and synchronization
 server          longitude-band width and start staggering
+monte_carlo     MC sample table and summary-output configuration, MC runs only
 ```
 
-Example:
+### 10.1 Current 1° deterministic configuration
+
+The current server baseline uses pre-aggregated VSCP inputs:
 
 ```yaml
 run:
-  name: baseline_1deg_area
+  name: baseline_1deg_voidpft_v1
   resolution: 1deg
-  input_format: original_luh2
+  input_format: vscp
   input_base_year: 850
   start_year: 850
   end_year: 2020
   area_unit: ha
 
 paths:
-  data_dir: ../In_ncfile
-  output_dir: ../Out_ncfile
+  data_dir: /home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/In_ncfile
+  output_dir: /home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/Out_ncfile
 
 inputs:
-  states: states_1deg.nc
-  transitions: transitions_1deg.nc
+  states: synthetic_states_1deg.nc
+  transitions: synthetic_transitions_1deg.nc
   pft: IBIS_PFT_dominant_1deg.nc
   pft_variable: null
   time_encoding: index
@@ -656,6 +696,9 @@ pft:
   update_mode: annual_conservative
   min_year_policy: clip
   max_year_policy: clip
+  missing_cell_policy: skip
+  nearest_search_radius: 8
+  default_index: null
 
 validation:
   run_before_simulation: false
@@ -671,7 +714,20 @@ server:
   stagger_max: 0
 ```
 
-Use a unique `run.name` whenever any input, experiment, model switch or parameter file changes. Completed outputs are skipped when their dimensions and `done` flags are complete.
+### 10.2 Current 0.25° deterministic configuration
+
+The corresponding production setup uses:
+
+```text
+resolution: 025deg
+states: synthetic_states_025deg.nc
+transitions: synthetic_transitions_025deg.nc
+pft: IBIS_PFT_dominant_0.25deg.nc
+missing_cell_policy: skip
+band_size_deg: 3
+```
+
+Use a unique `run.name` whenever any input, experiment, model switch, parameter file, or scientifically relevant setup changes.
 
 ---
 
@@ -709,7 +765,11 @@ Out_ncfile/<resolution>/<run.name>/input_validation_report.json
 
 The simulation stops when validation status is `FAIL`.
 
+For server band jobs, `validation.run_before_simulation` should normally remain `false` so every band does not rescan the same global files.
+
 ### 11.2 Standalone validation
+
+The current `tools/validate_inputs.py` uses a `CONFIG_PATH` constant.
 
 Edit:
 
@@ -717,10 +777,16 @@ Edit:
 tools/validate_inputs.py
 ```
 
-and set:
+and set, for example:
 
 ```python
-CONFIG_PATH = Path("config/run_025deg.yml")
+CONFIG_PATH = Path("config/run_1deg.yml")
+```
+
+or:
+
+```python
+CONFIG_PATH = Path("config/run_mc_1deg.yml")
 ```
 
 Then run:
@@ -734,6 +800,8 @@ Use `full_scan: false` for a faster structural check and `full_scan: true` for a
 ---
 
 ## 12. Repository structure
+
+The main production-relevant structure is:
 
 ```text
 Bookkeeping/
@@ -754,52 +822,79 @@ Bookkeeping/
 │   ├── events.py
 │   ├── harvest.py
 │   ├── transition.py
-│   └── summary_yearly.py
+│   ├── summary_yearly.py
+│   ├── mc_sampling.py
+│   └── mc_runner.py
 │
 ├── config/
 │   ├── config.yml
 │   ├── dynamic_carbon_density.parquet
-│   ├── run_025deg.yml
 │   ├── run_1deg.yml
+│   ├── run_025deg.yml
+│   ├── run_mc_1deg.yml
+│   ├── run_mc_025deg.yml
+│   ├── mc_parameters_1deg.yml
+│   ├── mc_parameters_025deg.yml
+│   ├── mc_parameters_smoke_1deg.yml
+│   ├── mc_parameters_smoke_025deg.yml
 │   └── experiments/
 │       ├── harvest_area.yml
 │       ├── harvest_bio_strict.yml
 │       └── harvest_bio_forced.yml
 │
 ├── server/
-│   ├── __init__.py
-│   ├── main_025deg.py
 │   ├── main_1deg.py
-│   ├── run_single_band.sbatch
+│   ├── main_025deg.py
+│   ├── main_mc_1deg.py
+│   ├── main_mc_025deg.py
+│   ├── run_1deg.sh
+│   ├── run_025deg.sh
+│   ├── submit_1deg.sh
+│   ├── submit_025deg.sh
+│   ├── run_mc_1deg.sh
+│   ├── run_mc_025deg.sh
+│   ├── submit_mc_1deg.sh
+│   ├── submit_mc_025deg.sh
+│   ├── submit_mc_batch.sh
+│   ├── merge_1deg.sh
+│   ├── merge_025deg_local.sh
 │   └── clean_run.sh
 │
-├── tools/
-│   └── validate_inputs.py
-│
-└── docs/
-    ├── CHANGELOG.txt
-    └── ROADMAP.md
+└── tools/
+    ├── validate_inputs.py
+    ├── check_pft_land_overlap.py
+    ├── generate_mc_samples.py
+    ├── validate_mc_band.py
+    ├── merge_mc_bands.py
+    ├── merge_all_mc.py
+    ├── summarize_mc.py
+    └── check_mc_convergence.py
 ```
+
+Legacy SLURM `.sbatch` files, if retained in the repository, are not part of the current DSUB production workflow.
 
 ### Main modules
 
 | File | Role |
 |---|---|
-| `src/main.py` | Local entry point using `config/run_local.yml` |
+| `src/main.py` | Local deterministic entry point |
 | `src/run_config.py` | Loads and resolves run YAML files |
-| `src/run_manager.py` | Shared local/server orchestration, output checks and manifests |
+| `src/run_manager.py` | Shared deterministic local/server orchestration, output checks and manifests |
 | `src/input_validator.py` | One-time input and configuration validation |
-| `src/LULCCSimulator.py` | Annual bookkeeping simulation and NetCDF output |
+| `src/LULCCSimulator.py` | Annual bookkeeping simulation |
 | `src/file_loader.py` | NetCDF slicing, time conversion, grid alignment and PFT loading |
-| `src/parameter_loader.py` | Base parameters, experiment overlays and dynamic density |
+| `src/parameter_loader.py` | Base parameters, experiment overlays, overrides and dynamic density |
 | `src/carbon_pools_init.py` | Pool definitions and initialization |
-| `src/events.py` | Clearing, abandonment and cropland–pasture events |
+| `src/events.py` | Clearing, abandonment and cropland-pasture events |
 | `src/harvest.py` | Area- and biomass-driven harvest |
 | `src/transition.py` | Annual decay, regrowth and flux attribution |
 | `src/summary_yearly.py` | Annual carbon-stock summaries |
-| `server/main_025deg.py` | 0.25° server entry point |
-| `server/main_1deg.py` | 1° server entry point |
-| `server/run_single_band.sbatch` | SLURM longitude-band launcher |
+| `src/mc_sampling.py` | Reproducible MC parameter sampling and physical validation |
+| `src/mc_runner.py` | Summary-only MC band execution and stale-output checks |
+| `server/main_1deg.py` | 1° deterministic server entry point |
+| `server/main_025deg.py` | 0.25° deterministic server entry point |
+| `server/main_mc_1deg.py` | 1° MC server entry point |
+| `server/main_mc_025deg.py` | 0.25° MC server entry point |
 
 ---
 
@@ -831,7 +926,7 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Main dependencies are:
+Main dependencies include:
 
 ```text
 numpy
@@ -839,41 +934,55 @@ netCDF4
 PyYAML
 pandas
 pyarrow
+xarray
+scipy
 ```
 
-`pandas` and `pyarrow` are required when transient carbon density is enabled.
+`pandas` and `pyarrow` are required by the Monte Carlo workflow and by transient carbon-density input.
+
+### 13.1 Current HPC Python environment
+
+The current production server uses Python 3.8.9:
+
+```bash
+source /share/ccsuite/ENV/setenvpython389.sh
+source /home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/envs/LULCC/bin/activate
+```
+
+and:
+
+```bash
+export PYTHONPATH="/home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/site-packages_py38:/home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/Code:${PYTHONPATH:-}"
+```
 
 ---
 
 ## 14. Input and output directories
 
-The default server layout is:
+The current production-server layout is:
 
 ```text
-/mnt/beegfs/product/lulc0120/
-├── Code/          Git repository
-├── In_ncfile/     State, transition and PFT inputs
-├── Out_ncfile/    Model outputs
-├── logs/          SLURM logs
-└── site-packages/ Server-local Python packages
+/home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/
+├── Code/                Git repository
+├── In_ncfile/           states, transitions and PFT inputs
+├── Out_ncfile/          deterministic and MC outputs
+├── logs/                DSUB logs
+├── envs/LULCC/          Python virtual environment
+└── site-packages_py38/  server-local Python packages
 ```
 
-Relative filenames in a run YAML are resolved under `paths.data_dir`.
+Relative input filenames in a run YAML are resolved under `paths.data_dir`.
 
-Example:
+Current principal input names include:
 
 ```text
 In_ncfile/
-├── states.nc
-├── transitions.nc
-├── states_1deg.nc
-├── transitions_1deg.nc
-├── states_vscp.nc
-├── transitions_vscp.nc
-├── states_vscp_1deg.nc
-├── transitions_vscp_1deg.nc
-├── IBIS_PFT_dominant_0.25deg.nc
-└── IBIS_PFT_dominant_1deg.nc
+├── synthetic_states_1deg.nc
+├── synthetic_transitions_1deg.nc
+├── synthetic_states_025deg.nc
+├── synthetic_transitions_025deg.nc
+├── IBIS_PFT_dominant_1deg.nc
+└── IBIS_PFT_dominant_0.25deg.nc
 ```
 
 ---
@@ -886,7 +995,7 @@ The local entry point reads:
 config/run_local.yml
 ```
 
-Create the file from one of the server configurations:
+Create it from an appropriate run configuration and edit local paths as needed.
 
 Linux or macOS:
 
@@ -900,7 +1009,7 @@ Windows:
 copy config\run_1deg.yml config\run_local.yml
 ```
 
-Edit `config/run_local.yml`, especially:
+Edit at least:
 
 ```text
 run.name
@@ -922,7 +1031,7 @@ Run from the repository root:
 python -m src.main
 ```
 
-The local output is:
+The local deterministic output is:
 
 ```text
 Out_ncfile/<resolution>/<run.name>/<output.filename_prefix>.global.nc
@@ -930,22 +1039,17 @@ Out_ncfile/<resolution>/<run.name>/<output.filename_prefix>.global.nc
 
 ---
 
-## 16. Running on the server
+## 16. Running deterministic simulations on the HPC server
 
-Edit the matching run configuration before submission:
-
-```text
-0.25° → config/run_025deg.yml
-1°    → config/run_1deg.yml
-```
-
-The SLURM script selects only the resolution. The harvest experiment and all model options are selected inside the run YAML.
+The current production scheduler is DSUB.
 
 Run from:
 
 ```bash
-cd /mnt/beegfs/product/lulc0120/Code
+cd /home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/Code
 ```
+
+The run YAML controls the actual model setup. The shell scripts select the resolution, band ID and server environment.
 
 ### 16.1 1° global simulation
 
@@ -956,13 +1060,34 @@ server:
   band_size_deg: 10
 ```
 
-the globe is divided into 36 bands:
+the globe is divided into 36 longitude bands:
+
+```text
+BAND_ID = 0 ... 35
+```
+
+Submit all bands:
 
 ```bash
-sbatch \
-  --array=0-35%25 \
-  --export=ALL,RESOLUTION=1deg \
-  server/run_single_band.sbatch
+bash server/submit_1deg.sh
+```
+
+Submit a subset, for example bands 0-5:
+
+```bash
+bash server/submit_1deg.sh 0 5
+```
+
+The submit helper generates one DSUB script per band under:
+
+```text
+server/generated_1deg/
+```
+
+and submits it with:
+
+```text
+dsub -s
 ```
 
 ### 16.2 0.25° global simulation
@@ -974,52 +1099,84 @@ server:
   band_size_deg: 3
 ```
 
-the globe is divided into 120 bands:
+the globe is divided into 120 longitude bands:
 
-```bash
-sbatch \
-  --array=0-119%35 \
-  --export=ALL,RESOLUTION=025deg \
-  server/run_single_band.sbatch
+```text
+BAND_ID = 0 ... 119
 ```
 
-### 16.3 Single-band test
-
-1° band 0:
+Submit all bands:
 
 ```bash
-sbatch \
-  --array=0-0 \
-  --export=ALL,RESOLUTION=1deg \
-  server/run_single_band.sbatch
+bash server/submit_025deg.sh
 ```
 
-0.25° band 0:
+Submit a subset:
 
 ```bash
-sbatch \
-  --array=0-0 \
-  --export=ALL,RESOLUTION=025deg \
-  server/run_single_band.sbatch
+bash server/submit_025deg.sh 0 11
 ```
 
-### 16.4 Rerunning a band
+### 16.3 Single-band test or rerun
 
-An output is skipped when:
+A single 1° band:
 
-- time, latitude and longitude dimensions match the current run;
-- the complete `done` array equals 1.
+```bash
+bash server/submit_1deg.sh 0 0
+```
 
-An incomplete output is removed and recomputed from the beginning.
+A single 0.25° band:
 
-To intentionally rerun a completed simulation:
+```bash
+bash server/submit_025deg.sh 0 0
+```
 
-- use a new `run.name`; or
-- remove the completed output file or run directory before submission.
+### 16.4 Job status and logs
+
+Use the DSUB job-status tools provided by the HPC platform, for example:
+
+```text
+djob
+```
+
+Logs are written under:
+
+```text
+/home/xibnlkjdxstbckxygcxyuan/jzh0126/LULCC/logs/
+```
+
+### 16.5 Rerunning completed or incomplete bands
+
+A deterministic band is considered reusable only when its dimensions, stored run identity and `done` array are complete and current.
+
+An incomplete or stale output is removed and recomputed from the beginning.
+
+To intentionally create a scientifically distinct simulation, use a new `run.name`.
+
+### 16.6 Cleaning deterministic outputs
+
+Examples:
+
+```bash
+bash server/clean_run.sh 1deg baseline_1deg_voidpft_v1
+bash server/clean_run.sh 025deg baseline_025deg_v1
+```
+
+Delete all model outputs:
+
+```bash
+bash server/clean_run.sh all
+```
+
+Logs are retained by default. To intentionally remove matching logs:
+
+```bash
+CLEAN_LOGS=1 bash server/clean_run.sh ...
+```
 
 ---
 
-## 17. Output structure
+## 17. Deterministic output structure
 
 Outputs are stored under:
 
@@ -1041,25 +1198,26 @@ Out_ncfile/<resolution>/<run.name>/
 ...
 ```
 
-The run directory also contains:
+The run directory can also contain:
 
 ```text
 run_config.yml
 run_manifest.json
-input_validation_report.json   when validation is enabled
+run_manifest.rankXXX.json
+input_validation_report.json
 ```
 
 ### 17.1 NetCDF global attributes
 
-The NetCDF file records:
+The NetCDF file records model provenance and runtime metadata, including:
 
 - run name;
 - resolution;
 - input format;
-- input and simulation years;
+- simulation years;
 - state, transition and PFT paths;
 - parameter and experiment paths;
-- PFT variable and source mode;
+- PFT source mode;
 - PFT update mode;
 - harvest mode;
 - dynamic-density status;
@@ -1220,7 +1378,7 @@ Area variables are:
 ha
 ```
 
-Fraction variables are:
+Fraction variables are dimensionless:
 
 ```text
 1
@@ -1254,13 +1412,14 @@ g C m^-2 yr^-1
 - Dynamic PFT remapping changes equilibrium composition but is designed to conserve ecosystem carbon at the remapping step.
 - Urban transitions are not yet a complete carbon-active process.
 - A short simulation omits legacy emissions and sinks generated before the selected start year.
-- Use a new `run.name` for every distinct set of inputs, parameters or model options.
-- A complete band is not resumed grid by grid after interruption; incomplete output is recomputed from the beginning.
+- Use a new `run.name` for every scientifically distinct set of inputs, parameters or model options.
+- A complete deterministic band is not resumed grid by grid after interruption; incomplete output is recomputed from the beginning.
 - Input validation should be run after replacing land-use, PFT or carbon-density data.
+- Monte Carlo uncertainty currently represents parameter uncertainty conditional on the selected land-use forcing, PFT input and model structure; it is not a complete estimate of all possible structural and forcing uncertainty.
 
 ---
 
-## 21. Recommended workflow
+## 21. Recommended deterministic workflow
 
 ```text
 1. Prepare states, transitions and PFT inputs.
@@ -1272,65 +1431,207 @@ g C m^-2 yr^-1
 7. Run a one-band test.
 8. Inspect Closure_Error, transition_clipped_area and harvest diagnostics.
 9. Submit all longitude bands.
-10. Check all done variables before merging outputs.
+10. Check all bands before merging outputs.
+11. Merge or summarize the deterministic result.
 ```
 
 ---
 
 ## 22. Monte Carlo uncertainty analysis
 
-The repository includes a summary-only Monte Carlo (MC) workflow for parameter
-uncertainty analysis at both 1° and 0.25°. The deterministic bookkeeping core is
-not duplicated: each MC realization generates parameter overrides, passes them
-through `ParameterLoader`, calls the normal `LULCCSimulator`, and spatially sums
-annual additive outputs directly to Parquet.
+The repository includes a summary-only Monte Carlo workflow for parameter uncertainty analysis at both 1° and 0.25°.
 
-### 22.1 Configurations
+The deterministic bookkeeping core is not duplicated. Each Monte Carlo realization:
+
+1. reads one reproducible parameter realization from a sample table;
+2. merges the sampled overrides with the normal model configuration;
+3. passes the effective parameters through the existing `ParameterLoader`;
+4. calls the normal `LULCCSimulator`;
+5. spatially sums annual additive outputs within each longitude band;
+6. stores compact Parquet summaries rather than a full gridded NetCDF for every realization.
+
+### 22.1 MC configurations
+
+Run configurations:
 
 ```text
 config/run_mc_1deg.yml
 config/run_mc_025deg.yml
+```
+
+Scientific sampling configurations:
+
+```text
 config/mc_parameters_1deg.yml
 config/mc_parameters_025deg.yml
+```
+
+Software smoke-test configurations:
+
+```text
 config/mc_parameters_smoke_1deg.yml
 config/mc_parameters_smoke_025deg.yml
 ```
 
-The MC run YAMLs are synchronized with the current deterministic VSCP setup.
-The first MC experiment uses static carbon density; transient carbon density
-should be treated as a separate uncertainty experiment.
+Core MC code:
 
-### 22.2 Parameter design
+```text
+src/mc_sampling.py
+src/mc_runner.py
+```
 
-The first-production design prioritizes carbon density and carbon allocation,
-followed by response/recovery times.
+Post-processing:
+
+```text
+tools/generate_mc_samples.py
+tools/validate_mc_band.py
+tools/merge_mc_bands.py
+tools/merge_all_mc.py
+tools/summarize_mc.py
+tools/check_mc_convergence.py
+```
+
+The MC run YAMLs should remain synchronized with the corresponding deterministic run YAMLs except for `run.name` and the `monte_carlo` section.
+
+### 22.2 Current MC baseline setup
+
+#### 1°
+
+```text
+input_format: vscp
+states: synthetic_states_1deg.nc
+transitions: synthetic_transitions_1deg.nc
+pft: IBIS_PFT_dominant_1deg.nc
+missing_cell_policy: skip
+dynamic_carbon_density.enabled: false
+band_size_deg: 10
+36 bands
+```
+
+#### 0.25°
+
+```text
+input_format: vscp
+states: synthetic_states_025deg.nc
+transitions: synthetic_transitions_025deg.nc
+pft: IBIS_PFT_dominant_0.25deg.nc
+missing_cell_policy: skip
+dynamic_carbon_density.enabled: false
+band_size_deg: 3
+120 bands
+```
+
+### 22.3 Scientific parameter design
+
+The first production MC design prioritizes carbon density and carbon allocation, followed by response and recovery times.
 
 | Parameter family | Distribution | Working uncertainty |
 |---|---|---|
-| Natural biomass density (`v`,`s`) | lognormal multiplier | CV = 20% |
-| Managed biomass density (`c`,`p`) | lognormal multiplier | CV = 20% |
-| Natural soil density (`v`,`s`) | lognormal multiplier | CV = 15% |
-| Managed soil density (`c`,`p`) | lognormal multiplier | CV = 15% |
-| Clearing response time | lognormal multiplier | CV = 25% |
-| Abandonment biomass time | lognormal multiplier | CV = 25% |
-| Abandonment soil time | lognormal multiplier | CV = 25% |
-| Harvest response time | lognormal multiplier | CV = 25% |
-| Harvest `SOC_min` | lognormal multiplier | CV = 15% |
+| Natural biomass density (`v`,`s`) | shared lognormal multiplier | CV = 20% |
+| Managed biomass density (`c`,`p`) | shared lognormal multiplier | CV = 20% |
+| Natural soil density (`v`,`s`) + harvest `SOC_min_v/s` | shared lognormal multiplier | CV = 15% |
+| Managed soil density (`c`,`p`) | shared lognormal multiplier | CV = 15% |
+| Clearing response time | shared lognormal multiplier | CV = 25% |
+| Abandonment biomass time | shared lognormal multiplier | CV = 25% |
+| Abandonment soil time | shared lognormal multiplier | CV = 25% |
+| Harvest response time | shared lognormal multiplier | CV = 25% |
 | Fast/slow fractions | beta | concentration = 40 |
 | Clearing allocation | Dirichlet/simplex | concentration = 60 |
 | Harvest product split | Dirichlet/simplex | concentration = 60 |
 
-These values are literature-informed working priors, not probability
-distributions directly reported by the source papers. Keep
-`scientific_ranges_confirmed: false` until the ranges are reviewed; then change
-it to `true` for production sampling.
+These values are literature-informed working priors, not probability distributions directly reported by the cited bookkeeping studies.
 
-Use the same priors at 1° and 0.25° so resolution is not confounded with
-parameter uncertainty.
+Keep:
 
-### 22.3 Generate samples
+```yaml
+scientific_ranges_confirmed: false
+```
 
-1° smoke test:
+until the uncertainty design has been reviewed. Change it to `true` only for the approved production experiment.
+
+Use the same priors at 1° and 0.25° so spatial resolution is not confounded with a different parameter distribution.
+
+### 22.4 Coupling `SOC_min` to equilibrium soil density
+
+`SOC_min_v` and `SOC_min_s` are absolute soil-carbon-density floors used during harvest disturbance.
+
+If equilibrium soil density and `SOC_min` were sampled independently, some realizations could generate:
+
+```text
+SOC_min > equilibrium Soil
+```
+
+which would suppress modeled harvest soil loss.
+
+Therefore the production parameter design applies the same shared random multiplier to:
+
+```text
+carbon_density.PFT*.Soil.v
+carbon_density.PFT*.Soil.s
+harvest_param.PFT*.SOC_min_v
+harvest_param.PFT*.SOC_min_s
+```
+
+This preserves the configured ratio:
+
+```text
+SOC_min / equilibrium Soil
+```
+
+within every realization.
+
+The MC parameter validator should additionally enforce:
+
+```text
+SOC_min_v <= Soil.v
+SOC_min_s <= Soil.s
+```
+
+### 22.5 Syntax check
+
+After changing MC code, run from the repository root:
+
+```bash
+python -m py_compile \
+  src/mc_sampling.py \
+  src/mc_runner.py \
+  tools/generate_mc_samples.py \
+  tools/validate_mc_band.py \
+  tools/merge_mc_bands.py \
+  tools/merge_all_mc.py \
+  tools/summarize_mc.py \
+  tools/check_mc_convergence.py \
+  server/main_mc_1deg.py \
+  server/main_mc_025deg.py
+```
+
+### 22.6 Validate MC inputs
+
+Because the current `tools/validate_inputs.py` uses a `CONFIG_PATH` constant, set:
+
+```python
+CONFIG_PATH = Path("config/run_mc_1deg.yml")
+```
+
+and run:
+
+```bash
+python -m tools.validate_inputs
+```
+
+For 0.25° use:
+
+```python
+CONFIG_PATH = Path("config/run_mc_025deg.yml")
+```
+
+Validation should be run once before submitting many DSUB jobs.
+
+### 22.7 Generate smoke-test samples
+
+The smoke test checks the computational pipeline only. It is not a scientific uncertainty experiment.
+
+For 1°:
 
 ```bash
 python -m tools.generate_mc_samples \
@@ -1339,7 +1640,7 @@ python -m tools.generate_mc_samples \
   --force
 ```
 
-0.25° smoke test:
+For 0.25°:
 
 ```bash
 python -m tools.generate_mc_samples \
@@ -1348,7 +1649,53 @@ python -m tools.generate_mc_samples \
   --force
 ```
 
-Production after parameter-range approval:
+The smoke table contains:
+
+```text
+sample_id 0   deterministic baseline
+sample_id 1   small perturbation
+sample_id 2   small perturbation
+```
+
+### 22.8 Mandatory baseline-equivalence test
+
+Before a large ensemble, run the deterministic MC baseline for one band.
+
+For 1° band 0:
+
+```bash
+bash server/submit_mc_1deg.sh 0 0 0 0
+```
+
+The MC output is located under:
+
+```text
+Out_ncfile/MC/1deg/mc_1deg_static_vscp_v1/
+└── sample_000000/
+    └── bands/
+        ├── band_000.parquet
+        └── band_000.json
+```
+
+Compare this band against the matching deterministic 1° `rank000.nc` using `tools.validate_mc_band`.
+
+Check the current CLI if needed:
+
+```bash
+python -m tools.validate_mc_band --help
+```
+
+Do not launch the full scientific ensemble until all common additive variables pass within numerical tolerance.
+
+### 22.9 Generate production samples
+
+After the parameter ranges have been approved and:
+
+```yaml
+scientific_ranges_confirmed: true
+```
+
+generate 1° samples:
 
 ```bash
 python -m tools.generate_mc_samples \
@@ -1356,7 +1703,7 @@ python -m tools.generate_mc_samples \
   --force
 ```
 
-or:
+or 0.25° samples:
 
 ```bash
 python -m tools.generate_mc_samples \
@@ -1364,54 +1711,121 @@ python -m tools.generate_mc_samples \
   --force
 ```
 
-Default production size is 500 random realizations plus baseline sample 0.
+The current default design generates:
 
-### 22.4 Baseline equivalence
-
-Before a large ensemble, run sample 0 for one band and compare it against the
-matching deterministic band using `tools.validate_mc_band`. Do not launch the
-full ensemble until all common variables pass.
-
-Example submission:
-
-```bash
-bash server/submit_mc_1deg.sh 0 0 0 0
+```text
+500 random realizations
++ sample 0 deterministic baseline
+= 501 rows
 ```
 
-### 22.5 DSUB submission
+The sample table records, for each realization:
 
-1° samples 0–2 over all bands:
+```text
+sample_id
+sample_kind
+sample_seed
+override_sha256
+overrides_json
+draws_json
+```
+
+The same master seed and unchanged specification produce reproducible samples.
+
+### 22.10 DSUB MC submission
+
+Each MC DSUB job currently represents:
+
+```text
+one sample_id × one longitude band
+```
+
+and uses one CPU.
+
+#### 1°
+
+Samples 0-2 across all 36 bands:
 
 ```bash
 bash server/submit_mc_1deg.sh 0 2
 ```
 
-0.25° samples 0–2 over all bands:
+Samples 1-10:
+
+```bash
+bash server/submit_mc_1deg.sh 1 10
+```
+
+Specific sample and band subset:
+
+```bash
+bash server/submit_mc_1deg.sh 1 10 0 5
+```
+
+#### 0.25°
+
+Samples 0-2 across all 120 bands:
 
 ```bash
 bash server/submit_mc_025deg.sh 0 2
 ```
 
-Production should be submitted in manageable sample batches:
+Samples 1-5:
 
 ```bash
-bash server/submit_mc_1deg.sh 1 10
-bash server/submit_mc_1deg.sh 11 20
+bash server/submit_mc_025deg.sh 1 5
 ```
 
-Generic wrapper:
+Specific band subset:
+
+```bash
+bash server/submit_mc_025deg.sh 1 5 0 11
+```
+
+#### Generic wrapper
 
 ```bash
 bash server/submit_mc_batch.sh 1deg   1 10
 bash server/submit_mc_batch.sh 025deg 1 5
 ```
 
-Each DSUB job runs one `sample_id × band` task using one CPU.
+Re-submission is safe because completed bands are reused only when their result identity is current.
 
-### 22.6 Reproducibility
+### 22.11 MC output structure
 
-Existing MC bands and merged samples are reused only when the current run
-matches the stored:
+The MC output root is:
+
+```text
+Out_ncfile/MC/<resolution>/<mc_name>/
+```
+
+A realization is stored as:
+
+```text
+sample_000001/
+├── bands/
+│   ├── band_000.parquet
+│   ├── band_000.json
+│   ├── ...
+│   └── band_NNN.parquet
+├── global.parquet
+└── sample_manifest.json
+```
+
+Band Parquet files contain:
+
+```text
+year
++ selected additive annual model outputs
+```
+
+The summary-only design avoids storing one full global gridded NetCDF for every Monte Carlo realization.
+
+### 22.12 Reproducibility and stale-output protection
+
+An existing MC band or merged realization is reused only if the current result-affecting identity matches the stored metadata.
+
+The identity includes:
 
 ```text
 sample-specific override hash
@@ -1423,18 +1837,18 @@ transition-file fingerprint
 PFT-file fingerprint
 model-code hash
 year range
-output variables
+output-variable list
 ```
 
-The sample-table SHA and Git commit are still stored as provenance metadata, but
-they are not used alone to invalidate a result. This allows an existing ensemble
-to be extended with additional samples without rerunning unchanged earlier
-realizations. The model-code hash is computed directly from result-affecting
-Python files, so it also detects uncommitted local code edits.
+The model-code hash is calculated directly from result-affecting Python files, so uncommitted local code changes also invalidate old results.
 
-### 22.7 Merge and summarize
+The sample-table SHA and Git commit are retained as provenance metadata but are not used alone to invalidate a realization. This allows an ensemble to be extended with additional samples without forcing unchanged earlier sample IDs to rerun.
 
-Merge one realization:
+If a band or merged output is incomplete, stale, corrupted, or inconsistent with the current identity, it is not silently reused.
+
+### 22.13 Merge one realization
+
+For 1° sample 1:
 
 ```bash
 python -m tools.merge_mc_bands \
@@ -1442,40 +1856,108 @@ python -m tools.merge_mc_bands \
   --sample-id 1
 ```
 
-Merge all completed realizations:
+For 0.25°, change the config:
+
+```bash
+python -m tools.merge_mc_bands \
+  --config config/run_mc_025deg.yml \
+  --sample-id 1
+```
+
+The merger checks all expected bands and rejects missing or stale band metadata.
+
+### 22.14 Merge many realizations
+
+While computation is still in progress:
 
 ```bash
 python -m tools.merge_all_mc \
   --config config/run_mc_1deg.yml \
-  --start 0 --end 500 \
+  --start 0 \
+  --end 500 \
   --skip-incomplete
 ```
 
-After all jobs finish, repeat without `--skip-incomplete`.
+After all expected jobs finish, repeat without `--skip-incomplete`:
 
-Calculate ensemble statistics:
+```bash
+python -m tools.merge_all_mc \
+  --config config/run_mc_1deg.yml \
+  --start 0 \
+  --end 500
+```
+
+The final strict run should fail if any expected realization cannot be merged.
+
+### 22.15 Ensemble summary
+
+For 1°:
 
 ```bash
 python -m tools.summarize_mc \
   --config config/run_mc_1deg.yml
 ```
 
-The baseline is excluded by default. Outputs include annual `mean`, `sd`, `p05`,
-`p50`, and `p95`, plus a compact `net_emissions_samples.parquet`.
+For 0.25°:
 
-### 22.8 Convergence
+```bash
+python -m tools.summarize_mc \
+  --config config/run_mc_025deg.yml
+```
+
+The deterministic baseline is excluded from the MC distribution by default.
+
+For every year and selected output variable, the ensemble summary contains:
+
+```text
+n
+mean
+sd
+p05
+p50
+p95
+```
+
+Principal summary files include:
+
+```text
+ensemble_summary.parquet
+ensemble_summary.json
+net_emissions_samples.parquet
+```
+
+### 22.16 Convergence analysis
+
+The largest completed ensemble is used as a reference distribution only.
+
+It must not be allowed to demonstrate convergence by comparing against itself.
+
+For example, with 500 completed random realizations, test only candidate sizes smaller than 500:
 
 ```bash
 python -m tools.check_mc_convergence \
   --config config/run_mc_1deg.yml \
-  --sizes 25,50,100,200,300,500 \
+  --sizes 25,50,100,200,300,400 \
   --start-year 1850 \
   --end-year 2020 \
   --replicates 50
 ```
 
-The script repeatedly draws subsets without replacement and compares them with
-the full completed ensemble. Default pass thresholds are:
+The convergence analysis evaluates:
+
+```text
+annual mean trajectory
+annual P05 trajectory
+annual P50 trajectory
+annual P95 trajectory
+cumulative mean
+cumulative SD
+cumulative P05
+cumulative P50
+cumulative P95
+```
+
+Current working pass thresholds are:
 
 ```text
 cumulative mean error       <= 2%
@@ -1483,22 +1965,126 @@ cumulative SD/P05/P95 error <= 5%
 annual statistic NRMSE      <= 5%
 ```
 
-The smallest tested sample size meeting all thresholds is reported as
-`recommended_minimum_n`.
-
-### 22.9 Recommended MC workflow
+Outputs are:
 
 ```text
-1. Validate inputs.
-2. Generate smoke samples.
-3. Run baseline sample 0 / band 0.
-4. Pass baseline-equivalence check.
-5. Review and approve parameter priors.
-6. Generate production sample table.
-7. Submit DSUB batches.
-8. Merge bands for each realization.
-9. Summarize ensemble statistics.
-10. Check convergence.
-11. Add samples if convergence is insufficient.
-12. Report exact priors, N, mean/median, SD, and P05-P95.
+convergence_summary.parquet
+convergence_summary.csv
+convergence_summary.json
+```
+
+If at least one candidate size smaller than the full ensemble passes all criteria, the smallest passing value is reported as:
+
+```text
+recommended_minimum_n
+```
+
+If none passes:
+
+```text
+convergence_demonstrated: false
+recommended_minimum_n: null
+```
+
+In that case, add more Monte Carlo realizations and repeat the convergence analysis. The full ensemble must not be considered converged merely because it matches itself.
+
+### 22.17 Production strategy across resolutions
+
+The current one-job-per-sample-per-band design implies:
+
+```text
+1°:
+501 × 36 = 18,036 jobs
+
+0.25°:
+501 × 120 = 60,120 jobs
+```
+
+Therefore the recommended strategy is:
+
+```text
+1. Validate the 1° MC inputs.
+2. Generate 1° smoke samples.
+3. Run sample 0 / band 0.
+4. Pass the baseline-equivalence test.
+5. Review and approve scientific priors.
+6. Generate the 1° production sample table.
+7. Run the 1° ensemble in manageable DSUB batches.
+8. Merge and summarize the 1° ensemble.
+9. Evaluate MC convergence.
+10. Use the convergence result to guide the initial 0.25° sample count.
+11. Run the corresponding 0.25° sample IDs.
+12. Extend the 0.25° ensemble if its own convergence check requires more samples.
+```
+
+The 1° convergence result is useful for computational planning but does not mathematically prove convergence at 0.25°; the 0.25° ensemble should also be checked once enough realizations are available.
+
+### 22.18 Interpreting the uncertainty result
+
+The current MC workflow quantifies parameter uncertainty conditional on:
+
+```text
+selected LUH2/VSCP land-use forcing
+selected PFT map
+selected static carbon-density framework
+selected harvest experiment
+current bookkeeping model structure
+```
+
+It does not automatically include:
+
+```text
+land-use forcing uncertainty
+PFT-map uncertainty
+alternative bookkeeping structures
+dynamic/transient carbon-density uncertainty
+other structural model uncertainty
+```
+
+Therefore reported MC intervals should be described as model-parameter uncertainty for the specified experiment rather than total uncertainty from all possible sources.
+
+For publication-level reporting, record at minimum:
+
+```text
+sampling specification
+parameter distributions and priors
+master random seed
+number of realizations
+baseline configuration
+mean and/or median
+standard deviation
+P05-P95 interval
+convergence diagnostic
+model and input-data version/provenance
+```
+
+---
+
+## 23. Recommended complete workflow
+
+### Deterministic model
+
+```text
+Prepare inputs
+→ validate
+→ one-band test
+→ full-band simulation
+→ inspect closure and process diagnostics
+→ merge/output analysis
+```
+
+### Monte Carlo parameter uncertainty
+
+```text
+Validate MC configuration
+→ smoke samples
+→ baseline-equivalence test
+→ approve priors
+→ generate production sample table
+→ 1° ensemble
+→ merge
+→ summarize
+→ convergence
+→ staged 0.25° ensemble
+→ final uncertainty reporting
 ```
